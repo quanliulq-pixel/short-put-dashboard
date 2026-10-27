@@ -6,10 +6,10 @@ Supports both Black-Scholes-Merton (Stocks/ETFs) and Black-76 (Commodity/Financi
 from __future__ import annotations
 
 import math
+from statistics import NormalDist
 from typing import Any, Dict, List, Optional
 
-from scipy.stats import norm
-
+_STD_NORM = NormalDist(0.0, 1.0)
 SQRT_2PI = math.sqrt(2.0 * math.pi)
 
 
@@ -23,7 +23,7 @@ def _norm_pdf(x: float) -> float:
 
 def _norm_ppf(p: float) -> float:
     p = max(1e-6, min(1.0 - 1e-6, p))
-    return float(norm.ppf(p))
+    return float(_STD_NORM.inv_cdf(p))
 
 
 def dynamic_strike_step(spot: float, default_step: float, dp: int = 2) -> float:
