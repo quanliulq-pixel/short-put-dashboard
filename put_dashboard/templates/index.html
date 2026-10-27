@@ -135,11 +135,11 @@
     <section class="section-block" id="top-picks-section">
       <div class="section-header">
         <div>
-          <h2>本周三大市场动态精选 · 评分 ≥ 80分 最佳卖Put品种 (Score ≥ 80 Top Picks)</h2>
-          <p class="sub">严格筛选「五维综合评分 ≥ 80分」的高安全边际标的（破成本铁底 / 高IV溢价 / 强支撑止跌），同板块自动分散；点击任意卡片进入下方深度工作台</p>
+          <h2>本周三大市场动态精选 · 最佳卖Put品种 (Weekly Top Picks)</h2>
+          <p class="sub">按「底部安全垫(30) + 波动率溢价(25) + 技术止跌支撑(20) + 趋势防飞刀(15) + 流动性护城河(10)」综合评分排序，同板块自动分散；点击任意卡片进入下方深度工作台</p>
         </div>
         <div class="legend-pills">
-          <span class="badge badge-bull">仅列评分 ≥ 80分 优质卖Put机会</span>
+          <span class="badge badge-bull">破成本铁底 / 龙头回调接货</span>
           <span class="badge badge-gold">高IV溢价 / 支撑位顺势收租</span>
         </div>
       </div>
@@ -336,145 +336,21 @@
       </div>
     </section>
 
-    <!-- 新增模块：历史推荐回顾与卖Put后续行权/盈亏复盘 (Rolling 12-Week Cohort Review) -->
-    <section class="section-block backtest-section" id="backtest-section">
-      <div class="section-header">
-        <div>
-          <h2>📊 历史推荐回顾与卖Put后续复盘 (严格筛选评分 ≥ 80分 标的 · 过去12期滚动实证)</h2>
-          <p class="sub">仅追踪往期每周「评分 ≥ 80分」推荐品种在卖出Put后的真实结局：统计未行权率、被行权率、浅行权仍盈利占比及大幅亏损案例</p>
-        </div>
-        <div class="table-filters">
-          <div class="seg" id="bt-tier-tabs">
-            <button type="button" data-tier="auto" class="active">★ 智能推荐档</button>
-            <button type="button" data-tier="conservative">保守高胜率档 (Δ-0.15)</button>
-            <button type="button" data-tier="balanced">平衡甜点档 (Δ-0.25)</button>
-            <button type="button" data-tier="aggressive">进取接货档 (Δ-0.35)</button>
-          </div>
-        </div>
-      </div>
-
-      <!-- 6大复盘核心KPI卡片 -->
-      <div class="bt-kpi-grid" id="bt-kpi-grid">
-        <div class="bt-kpi-card">
-          <span class="bk-lbl">累计追踪推荐标的</span>
-          <strong class="bk-val" id="bt-total">--</strong>
-          <span class="bk-sub" id="bt-total-sub">过去12期周度组合</span>
-        </div>
-        <div class="bt-kpi-card bull-border">
-          <span class="bk-lbl">✅ 未被行权 (安全收租)</span>
-          <strong class="bk-val bull-txt" id="bt-unassigned">--</strong>
-          <span class="bk-sub" id="bt-unassigned-sub">期末价 ≥ 行权价K，拿满权利金</span>
-        </div>
-        <div class="bt-kpi-card gold-border">
-          <span class="bk-lbl">🟡 被行权总计 (跌破K接货)</span>
-          <strong class="bk-val gold-txt" id="bt-assigned">--</strong>
-          <span class="bk-sub" id="bt-assigned-sub">期末价 &lt; 行权价K</span>
-        </div>
-        <div class="bt-kpi-card cyan-border">
-          <span class="bk-lbl">🟢 被行权仍盈利 / 🟠 小幅浮亏</span>
-          <strong class="bk-val cyan-txt" id="bt-assigned-detail">--</strong>
-          <span class="bk-sub" id="bt-assigned-detail-sub">权利金安全垫缓冲保护</span>
-        </div>
-        <div class="bt-kpi-card bear-border">
-          <span class="bk-lbl">🔴 大幅亏损 (击穿安全垫)</span>
-          <strong class="bk-val bear-txt" id="bt-heavyloss">--</strong>
-          <span class="bk-sub" id="bt-heavyloss-sub">净亏&gt;2倍权利金或跌穿平衡点&gt;3%</span>
-        </div>
-        <div class="bt-kpi-card">
-          <span class="bk-lbl">💰 综合盈利胜率 &amp; 期望R倍数</span>
-          <strong class="bk-val gold-txt" id="bt-winrate">--</strong>
-          <span class="bk-sub" id="bt-winrate-sub">单笔平均净收益倍数</span>
-        </div>
-      </div>
-
-      <!-- 双栏：左栏12期周度堆叠柱状图 + 右栏四大市场&三档位行权对比表 -->
-      <div class="ws-grid">
-        <div class="panel">
-          <div class="panel-header">
-            <div>
-              <h3>过去12期每周推荐卖Put后续结局分布 (按周次Cohort统计)</h3>
-              <p class="sub">绿色=未行权全额收租 ｜ 青色=被行权但仍盈利 ｜ 橙色=被行权小幅浮亏 ｜ 红色=大幅亏损</p>
-            </div>
-          </div>
-          <div id="bt-cohort-chart" class="echart-canvas" style="height:265px;"></div>
-        </div>
-
-        <div class="panel">
-          <div class="panel-header">
-            <div>
-              <h3>四大市场 &amp; 三档行权价历史行权率与大幅亏损率对比</h3>
-              <p class="sub">横向检验不同市场与不同Delta虚值档位的真实抗跌安全性</p>
-            </div>
-          </div>
-          <div id="bt-market-comparison" class="optchain-wrap" style="max-height:265px;"></div>
-        </div>
-      </div>
-
-      <!-- 历史推荐逐笔复盘明细表 (支持筛选大幅亏损 / 被行权 / 未行权) -->
-      <div class="panel" style="margin-top:4px;">
-        <div class="panel-header">
-          <div>
-            <h3>历史推荐卖Put逐笔复盘台账 (点击任意行可在上方工作台复盘K线)</h3>
-            <p class="sub">完整记录每期推荐品种的建仓价、行权价K、盈亏平衡点BE、持有期最低价、期末结算价及最终单手盈亏</p>
-          </div>
-          <div class="table-filters">
-            <div class="seg" id="bt-outcome-tabs">
-              <button type="button" data-out="all" class="active">全部记录</button>
-              <button type="button" data-out="HEAVY_LOSS">🔴 仅看大幅亏损</button>
-              <button type="button" data-out="ASSIGNED">🟡 仅看被行权标的</button>
-              <button type="button" data-out="SAFE">✅ 仅看未行权收租</button>
-            </div>
-            <select id="bt-mkt-filter" class="filter-select">
-              <option value="all">全部四大市场</option>
-              <option value="cn_idx">A股三大股指 (MO/IO/HO)</option>
-              <option value="us_stk">美股与ETF</option>
-              <option value="us_fut">美国期货</option>
-              <option value="cn_fut">中国商品期货</option>
-            </select>
-          </div>
-        </div>
-
-        <div class="table-container" style="max-height:430px;">
-          <table class="screener-table" id="bt-ledger-table">
-            <thead>
-              <tr>
-                <th>期次 / 建仓→复盘日</th>
-                <th>品种 / 市场</th>
-                <th class="num">当时评分</th>
-                <th class="num">建仓现价(S₀)</th>
-                <th class="num">卖Put行权价(K)</th>
-                <th class="num">安全垫(OTM)</th>
-                <th class="num">盈亏平衡点(BE)</th>
-                <th class="num">期间最低价(最大回撤)</th>
-                <th class="num">期末结算价(涨跌%)</th>
-                <th>后续结局状态</th>
-                <th class="num">单手收权利金</th>
-                <th class="num">单手实际净损益 (R倍数)</th>
-              </tr>
-            </thead>
-            <tbody id="bt-ledger-tbody">
-              <tr><td colspan="12" class="empty-cell">正在统计过去12期推荐标的卖Put后续表现…</td></tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
-    </section>
-
-    <!-- 第三部分：全市场评分≥80分卖Put动态评分总览表 -->
+    <!-- 第三部分：全市场79品种卖Put动态评分总览表 -->
     <section class="section-block" id="screener-section">
       <div class="section-header">
         <div>
-          <h2>全市场「评分 ≥ 80分」卖Put高分总览表 (严选高安全垫标的)</h2>
-          <p class="sub">仅列出当前综合评分 ≥ 80分 的期权品种（支持按市场、策略类型筛选及排序；点击任意行可在上方深度工作台查看K线与损益图）</p>
+          <h2>全市场期权品种卖Put动态量化总榜 (79大高流动性标的)</h2>
+          <p class="sub">支持按市场、策略类型、关键词筛选及多列排序；点击任意行可在上方深度工作台查看K线与损益图</p>
         </div>
 
         <div class="table-filters">
           <div class="seg" id="mkt-filter-tabs">
-            <button type="button" data-mkt="all" class="active">全部 ≥80分</button>
+            <button type="button" data-mkt="all" class="active">全部市场 (79)</button>
             <button type="button" data-mkt="cn_idx">A股三大股指 (3)</button>
-            <button type="button" data-mkt="us_stk">美股与ETF</button>
-            <button type="button" data-mkt="us_fut">美国期货</button>
-            <button type="button" data-mkt="cn_fut">中国期货</button>
+            <button type="button" data-mkt="us_stk">美股与ETF (28)</button>
+            <button type="button" data-mkt="us_fut">美国期货 (18)</button>
+            <button type="button" data-mkt="cn_fut">中国期货 (33)</button>
           </div>
           <select id="archetype-filter" class="filter-select">
             <option value="all">全部卖Put策略类型</option>
@@ -527,10 +403,9 @@
   <!-- iPhone 手机端底部拇指快捷导航栏 (仅移动端显示) -->
   <nav class="mobile-bottom-nav" id="mobile-bottom-nav">
     <button type="button" data-target="cn-idx-section" class="active">🇨🇳 三大股指</button>
-    <button type="button" data-target="top-picks-section">🏆 三市场</button>
-    <button type="button" data-target="workstation-section">🔬 工作站</button>
-    <button type="button" data-target="backtest-section">📊 历史复盘</button>
-    <button type="button" data-target="screener-section">📋 全表</button>
+    <button type="button" data-target="top-picks-section">🏆 三市场精选</button>
+    <button type="button" data-target="workstation-section">🔬 期权工作站</button>
+    <button type="button" data-target="screener-section">📋 79品种全表</button>
   </nav>
 
   <!-- iPhone 扫码看盘 & 离线周报导出弹窗 -->

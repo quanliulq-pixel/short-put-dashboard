@@ -13,7 +13,6 @@ import json
 import os
 import re
 
-from backtest_engine import get_historical_review
 from data_engine import ensure_all_bars_loaded, fetch_live_option_chain_sample, get_instrument_bars
 from recommender import _std, get_weekly_recommendations
 from universe import ALL_INSTRUMENTS
@@ -76,9 +75,6 @@ def build_static_bundle() -> None:
         except Exception:
             pass
 
-    print("4. Computing 12-week rolling historical recommendation review & backtest...")
-    bt_bundle = get_historical_review(hold_trading_days=20, num_cohorts=12, force=False)
-
     inst_meta = {
         inst["id"]: {
             "market": inst["market"],
@@ -105,7 +101,6 @@ window.__STATIC_REC_30__ = {json.dumps(rec_30, ensure_ascii=False)};
 window.__STATIC_KLINES__ = {json.dumps(klines_bundle, ensure_ascii=False)};
 window.__STATIC_CHAINS__ = {json.dumps(chains_bundle, ensure_ascii=False)};
 window.__STATIC_META__ = {json.dumps(inst_meta, ensure_ascii=False)};
-window.__STATIC_BACKTEST__ = {json.dumps(bt_bundle, ensure_ascii=False)};
 
 (function() {{
   function normCdf(x) {{
@@ -245,9 +240,6 @@ window.__STATIC_BACKTEST__ = {json.dumps(bt_bundle, ensure_ascii=False)};
       if (path === "/api/recommendations") {{
         const dte = parseInt(sp.get("dte") || "30", 10) || 30;
         return new Response(JSON.stringify(getRecsForDte(dte)), {{ status: 200, headers: {{ "Content-Type": "application/json" }} }});
-      }}
-      if (path === "/api/backtest") {{
-        return new Response(JSON.stringify(window.__STATIC_BACKTEST__), {{ status: 200, headers: {{ "Content-Type": "application/json" }} }});
       }}
       if (path === "/api/detail") {{
         const id = sp.get("id") || "CN_FUT:IM0";

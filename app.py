@@ -16,7 +16,6 @@ import time
 
 from flask import Flask, Response, jsonify, render_template, request
 
-from backtest_engine import get_historical_review
 from data_engine import fetch_live_option_chain_sample
 from options_math import build_payoff_curve, price_put_and_greeks, skew_adjusted_iv
 from recommender import get_instrument_detail, get_weekly_recommendations
@@ -294,17 +293,6 @@ def api_recommendations():
         return jsonify(data)
     except Exception as exc:
         logger.exception("api_recommendations failed")
-        return jsonify({"error": str(exc)}), 500
-
-
-@app.route("/api/backtest")
-def api_backtest():
-    force = request.args.get("force") == "1"
-    try:
-        data = get_historical_review(hold_trading_days=20, num_cohorts=12, force=force)
-        return jsonify(data)
-    except Exception as exc:
-        logger.exception("api_backtest failed")
         return jsonify({"error": str(exc)}), 500
 
 
