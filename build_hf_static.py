@@ -23,8 +23,9 @@ def build_static_bundle() -> None:
     out_dir = os.path.join(base_dir, "huggingface_static")
     os.makedirs(out_dir, exist_ok=True)
 
-    print("1. Computing weekly recommendations (30 DTE base)...")
-    rec_30 = get_weekly_recommendations(target_dte=30, force=False)
+    force = os.environ.get("FORCE_REFRESH", "1") == "1"
+    print(f"1. Computing weekly recommendations (30 DTE base, force={force})...")
+    rec_30 = get_weekly_recommendations(target_dte=30, force=force)
 
     print("2. Packing 1-year K-line & technical bands for all 79 varieties...")
     ensure_all_bars_loaded(force=False)
