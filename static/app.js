@@ -145,12 +145,18 @@
     }
   }
 
-  // ---------------- Render 3-Market Top Picks ----------------
+  // ---------------- Render 3-Market Top Picks (Score >= 90) ----------------
   function renderTopPicks(data) {
     const picks = data.topPicks || {};
-    renderMarketPickColumn("picks-us-stk", picks.us_stk || []);
-    renderMarketPickColumn("picks-us-fut", picks.us_fut || []);
-    renderMarketPickColumn("picks-cn-fut", picks.cn_fut || []);
+    const usStk = picks.us_stk || [];
+    const usFut = picks.us_fut || [];
+    const cnFut = picks.cn_fut || [];
+    if (el("top-count-usstk")) el("top-count-usstk").textContent = `${usStk.length} 只 ≥90分`;
+    if (el("top-count-usfut")) el("top-count-usfut").textContent = `${usFut.length} 只 ≥90分`;
+    if (el("top-count-cnfut")) el("top-count-cnfut").textContent = `${cnFut.length} 只 ≥90分`;
+    renderMarketPickColumn("picks-us-stk", usStk);
+    renderMarketPickColumn("picks-us-fut", usFut);
+    renderMarketPickColumn("picks-cn-fut", cnFut);
   }
 
   function renderMarketPickColumn(containerId, list) {
@@ -928,17 +934,36 @@
     }
   }
 
-  // ---------------- Render Full 76-Variety Screener Table ----------------
+  // ---------------- Render Score >= 90 Screener Table ----------------
   function renderScreenerTable() {
     if (!state.data || !state.data.all) return;
     const tbody = el("screener-tbody");
     const q = state.searchQuery.trim().toLowerCase();
 
+    // Update tab counts for Score >= 90
+    const all90 = state.data.all.filter((r) => Number(r.putScore) >= 90.0);
+    const usStk90 = all90.filter((r) => r.market === "us_stk").length;
+    const usFut90 = all90.filter((r) => r.market === "us_fut").length;
+    const cnFut90 = all90.filter((r) => r.market === "cn_fut").length;
+    const tabContainer = el("mkt-filter-tabs");
+    if (tabContainer) {
+      const btnAll = tabContainer.querySelector('button[data-mkt="all"]');
+      const btnUsStk = tabContainer.querySelector('button[data-mkt="us_stk"]');
+      const btnUsFut = tabContainer.querySelector('button[data-mkt="us_fut"]');
+      const btnCnFut = tabContainer.querySelector('button[data-mkt="cn_fut"]');
+      if (btnAll) btnAll.textContent = `全部 ≥90分 (${all90.length})`;
+      if (btnUsStk) btnUsStk.textContent = `美股与ETF (${usStk90})`;
+      if (btnUsFut) btnUsFut.textContent = `美国期货 (${usFut90})`;
+      if (btnCnFut) btnCnFut.textContent = `中国期货 (${cnFut90})`;
+    }
+
     let rows = state.data.all.filter((r) => {
       if (state.mktFilter === "cn_idx") {
         if (r.sector !== "股指期权" && !["CN_FUT:IM0", "CN_FUT:IF0", "CN_FUT:IH0"].includes(r.id)) return false;
-      } else if (state.mktFilter !== "all" && r.market !== state.mktFilter) {
-        return false;
+      } else {
+        // Strictly filter for putScore >= 90.0 unless searching by keyword
+        if (!q && Number(r.putScore) < 90.0) return false;
+        if (state.mktFilter !== "all" && r.market !== state.mktFilter) return false;
       }
       if (state.archetypeFilter !== "all" && !r.archetype.includes(state.archetypeFilter)) return false;
       if (q) {
