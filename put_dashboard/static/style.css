@@ -1317,7 +1317,7 @@ body {
 
   .mobile-bottom-nav {
     display: grid;
-    grid-template-columns: repeat(4, 1fr);
+    grid-template-columns: repeat(5, 1fr);
     position: fixed;
     left: 0;
     right: 0;
@@ -1325,9 +1325,9 @@ body {
     background: rgba(14, 21, 35, 0.96);
     backdrop-filter: blur(10px);
     border-top: 1px solid var(--border-light);
-    padding: 6px 6px calc(6px + env(safe-area-inset-bottom, 0px));
+    padding: 6px 4px calc(6px + env(safe-area-inset-bottom, 0px));
     z-index: 900;
-    gap: 4px;
+    gap: 3px;
   }
 
   .mobile-bottom-nav button {
@@ -1335,9 +1335,9 @@ body {
     border: 1px solid transparent;
     border-radius: 6px;
     color: var(--text-muted);
-    font-size: 11.5px;
+    font-size: 11px;
     font-weight: 700;
-    padding: 7px 4px;
+    padding: 7px 2px;
     cursor: pointer;
   }
 
@@ -1346,4 +1346,71 @@ body {
     color: var(--gold);
     border-color: rgba(245, 158, 11, 0.45);
   }
+}
+
+/* ---------------- Historical Review & Backtest Section ---------------- */
+.backtest-section {
+  border-color: rgba(56, 189, 248, 0.35);
+  background: linear-gradient(180deg, rgba(56, 189, 248, 0.04) 0%, var(--bg-panel) 100%);
+}
+
+.bt-kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 10px;
+}
+
+@media (max-width: 1280px) {
+  .bt-kpi-grid {
+    grid-template-columns: repeat(3, 1fr);
+  }
+}
+
+@media (max-width: 768px) {
+  .bt-kpi-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+.bt-kpi-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.bt-kpi-card.bull-border {
+  border-left: 3px solid var(--bull);
+}
+
+.bt-kpi-card.gold-border {
+  border-left: 3px solid var(--gold);
+}
+
+.bt-kpi-card.cyan-border {
+  border-left: 3px solid var(--cyan);
+}
+
+.bt-kpi-card.bear-border {
+  border-left: 3px solid var(--bear);
+}
+
+.bk-lbl {
+  font-size: 11.5px;
+  color: var(--text-muted);
+  font-weight: 600;
+}
+
+.bk-val {
+  font-size: 18px;
+  font-weight: 800;
+  color: #fff;
+}
+
+.bk-sub {
+  font-size: 11px;
+  color: var(--text-dim);
 }

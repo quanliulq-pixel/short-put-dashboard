@@ -18,6 +18,11 @@
     sortAsc: false,
     klineChart: null,
     payoffChart: null,
+    btData: null,
+    btTier: "auto",
+    btOutcomeFilter: "all",
+    btMktFilter: "all",
+    btChart: null,
   };
 
   const el = (id) => document.getElementById(id);
@@ -75,6 +80,7 @@
       renderTopPicks(json);
       renderCnIndexOptions(json);
       renderScreenerTable();
+      loadBacktestReview(force);
 
       // Default select #1 pick if none selected yet
       if (!state.selectedId && json.all && json.all.length > 0) {
@@ -1046,6 +1052,302 @@
     });
   }
 
+  // ---------------- Historical Review & Backtest Section ----------------
+  async function loadBacktestReview(force = false) {
+    try {
+      const resp = await fetch(`/api/backtest?force=${force ? "1" : "0"}`);
+      const json = await resp.json();
+      if (json.error) throw new Error(json.error);
+      state.btData = json;
+      renderBacktestSection();
+    } catch (err) {
+      console.error("loadBacktestReview error:", err);
+    }
+  }
+
+  function renderBacktestSection() {
+    if (!state.btData) return;
+    const d = state.btData;
+    const tk = state.btTier || "auto";
+    const st = (d.tierStats && d.tierStats[tk]) || (d.tierStats && d.tierStats.auto) || {};
+
+    // 1. Update 6 KPI cards
+    if (el("bt-total")) {
+      el("bt-total").textContent = `${st.total || 0} 笔`;
+      el("bt-total-sub").textContent = `已到期 ${st.expiredCount || 0} 笔 · 持有中 ${st.activeCount || 0} 笔`;
+    }
+    if (el("bt-unassigned")) {
+      el("bt-unassigned").textContent = `${st.unassignedCount || 0} 笔 (${fmtNum(st.unassignedPct, 1)}%)`;
+      el("bt-unassigned-sub").textContent = `期末价 ≥ 行权价K，全额拿满权利金`;
+    }
+    if (el("bt-assigned")) {
+      el("bt-assigned").textContent = `${st.assignedCount || 0} 笔 (${fmtNum(st.assignedPct, 1)}%)`;
+      el("bt-assigned-sub").textContent = `盘中曾触碰K: ${st.touchedCount || 0}笔 (${fmtNum(st.touchedPct, 1)}%)`;
+    }
+    if (el("bt-assigned-detail")) {
+      el("bt-assigned-detail").textContent = `${st.assignedProfitCount || 0} 笔盈利 / ${st.mildLossCount || 0} 笔微亏`;
+      el("bt-assigned-detail-sub").textContent = `权利金缓冲垫抵消大部分接货浮亏`;
+    }
+    if (el("bt-heavyloss")) {
+      el("bt-heavyloss").textContent = `${st.heavyLossCount || 0} 笔 (${fmtNum(st.heavyLossPct, 1)}%)`;
+      el("bt-heavyloss-sub").textContent = `净亏>2倍权利金或跌穿平衡点>3%`;
+    }
+    if (el("bt-winrate")) {
+      const rSign = (st.avgRMultiple || 0) >= 0 ? "+" : "";
+      el("bt-winrate").textContent = `${fmtNum(st.winRatePct, 1)}% (${rSign}${fmtNum(st.avgRMultiple, 2)}R)`;
+      el("bt-winrate-sub").textContent = `平均单期保证金净回报 ${fmtSignPct(st.avgRocMarginNetPct, 2)}`;
+    }
+
+    // 2. Render Cohort Stacked Bar + Win Rate Line Chart
+    renderBacktestCohortChart(d.cohorts || [], tk);
+
+    // 3. Render Market & 3-Tier Comparison Table
+    renderBacktestMarketComparison(d, tk);
+
+    // 4. Render Detailed Trade Ledger Table
+    renderBacktestLedgerTable(d.records || [], tk);
+  }
+
+  function renderBacktestCohortChart(cohorts, tk) {
+    const dom = el("bt-cohort-chart");
+    if (!dom || typeof echarts === "undefined") return;
+    if (!state.btChart) {
+      state.btChart = echarts.init(dom);
+    }
+
+    const labels = cohorts.map((c) => c.cohortLabel.replace(/^第\d+期\s*/, ""));
+    const safeArr = cohorts.map((c) => (c.tiers[tk] || c.tiers.auto).unassignedCount);
+    const profArr = cohorts.map((c) => (c.tiers[tk] || c.tiers.auto).assignedProfitCount);
+    const mildArr = cohorts.map((c) => (c.tiers[tk] || c.tiers.auto).mildLossCount);
+    const heavyArr = cohorts.map((c) => (c.tiers[tk] || c.tiers.auto).heavyLossCount);
+    const winRateArr = cohorts.map((c) => (c.tiers[tk] || c.tiers.auto).winRatePct);
+
+    state.btChart.setOption({
+      backgroundColor: "transparent",
+      tooltip: {
+        trigger: "axis",
+        backgroundColor: "rgba(13,20,34,0.95)",
+        borderColor: "#2c3e5e",
+        textStyle: { color: "#e6edf7", fontSize: 12 },
+      },
+      legend: {
+        top: 0,
+        textStyle: { color: "#8b9bb4", fontSize: 11 },
+        data: ["未行权·全额收租", "被行权·仍盈利", "被行权·小幅浮亏", "大幅亏损", "当期总胜率%"],
+      },
+      grid: { left: 40, right: 45, top: 32, bottom: 26 },
+      xAxis: {
+        type: "category",
+        data: labels,
+        axisLabel: { color: "#8b9bb4", fontSize: 11 },
+        axisLine: { lineStyle: { color: "#22304a" } },
+      },
+      yAxis: [
+        {
+          type: "value",
+          name: "品种数",
+          nameTextStyle: { color: "#8b9bb4", fontSize: 11 },
+          splitLine: { lineStyle: { color: "rgba(34,48,74,0.45)" } },
+          axisLabel: { color: "#8b9bb4", fontSize: 11 },
+        },
+        {
+          type: "value",
+          name: "胜率%",
+          min: 0,
+          max: 100,
+          nameTextStyle: { color: "#f59e0b", fontSize: 11 },
+          splitLine: { show: false },
+          axisLabel: { color: "#f59e0b", fontSize: 11, formatter: "{value}%" },
+        },
+      ],
+      series: [
+        {
+          name: "未行权·全额收租",
+          type: "bar",
+          stack: "total",
+          data: safeArr,
+          itemStyle: { color: "#10b981" },
+          barMaxWidth: 24,
+        },
+        {
+          name: "被行权·仍盈利",
+          type: "bar",
+          stack: "total",
+          data: profArr,
+          itemStyle: { color: "#38bdf8" },
+        },
+        {
+          name: "被行权·小幅浮亏",
+          type: "bar",
+          stack: "total",
+          data: mildArr,
+          itemStyle: { color: "#f59e0b" },
+        },
+        {
+          name: "大幅亏损",
+          type: "bar",
+          stack: "total",
+          data: heavyArr,
+          itemStyle: { color: "#ef4444" },
+        },
+        {
+          name: "当期总胜率%",
+          type: "line",
+          yAxisIndex: 1,
+          data: winRateArr,
+          smooth: true,
+          symbol: "circle",
+          symbolSize: 6,
+          lineStyle: { color: "#fde047", width: 2 },
+          itemStyle: { color: "#fde047" },
+        },
+      ],
+    });
+  }
+
+  function renderBacktestMarketComparison(d, activeTk) {
+    const wrap = el("bt-market-comparison");
+    if (!wrap) return;
+    const st = (d.tierStats && d.tierStats[activeTk]) || {};
+    const byMkt = st.byMarket || {};
+    const mktRows = ["cn_idx", "us_stk", "us_fut", "cn_fut"]
+      .map((mk) => {
+        const m = byMkt[mk];
+        if (!m) return "";
+        return `
+          <tr>
+            <td><strong>${m.label}</strong></td>
+            <td>${m.total}笔</td>
+            <td class="bull-txt"><strong>${m.unassigned}笔 (${fmtNum(m.unassignedPct, 1)}%)</strong></td>
+            <td class="gold-txt">${m.assigned}笔 (${fmtNum(m.assignedPct, 1)}%)</td>
+            <td class="${m.heavyLoss > 0 ? "bear-txt" : "bull-txt"}"><strong>${m.heavyLoss}笔 (${fmtNum(m.heavyLossPct, 1)}%)</strong></td>
+            <td class="gold-txt"><strong>${fmtNum(m.winRatePct, 1)}%</strong></td>
+            <td class="${m.avgR >= 0 ? "bull-txt" : "bear-txt"}">${m.avgR >= 0 ? "+" : ""}${fmtNum(m.avgR, 2)}R</td>
+          </tr>
+        `;
+      })
+      .join("");
+
+    const tierLabelMap = {
+      conservative: "保守档 (Δ≈-0.15)",
+      balanced: "平衡档 (Δ≈-0.25)",
+      aggressive: "进取档 (Δ≈-0.35)",
+      auto: "★ 智能推荐档",
+    };
+
+    const tierRows = ["conservative", "balanced", "aggressive", "auto"]
+      .map((tKey) => {
+        const ts = (d.tierStats && d.tierStats[tKey]) || {};
+        const isCur = tKey === activeTk ? 'style="background:rgba(245,158,11,0.12);"' : "";
+        return `
+          <tr ${isCur}>
+            <td><strong>${tierLabelMap[tKey]}</strong></td>
+            <td>${ts.total || 0}笔</td>
+            <td class="bull-txt"><strong>${ts.unassignedCount || 0}笔 (${fmtNum(ts.unassignedPct, 1)}%)</strong></td>
+            <td class="gold-txt">${ts.assignedCount || 0}笔 (${fmtNum(ts.assignedPct, 1)}%)</td>
+            <td class="${(ts.heavyLossCount || 0) > 0 ? "bear-txt" : "bull-txt"}"><strong>${ts.heavyLossCount || 0}笔 (${fmtNum(ts.heavyLossPct, 1)}%)</strong></td>
+            <td class="gold-txt"><strong>${fmtNum(ts.winRatePct, 1)}%</strong></td>
+            <td class="bull-txt">+${fmtNum(ts.avgRMultiple, 2)}R</td>
+          </tr>
+        `;
+      })
+      .join("");
+
+    wrap.innerHTML = `
+      <table class="chain-table">
+        <thead>
+          <tr>
+            <th>分市场统计 (当前档位)</th>
+            <th>样本数</th>
+            <th>✅ 未被行权</th>
+            <th>🟡 被行权</th>
+            <th>🔴 大幅亏损</th>
+            <th>总胜率</th>
+            <th>期望R倍数</th>
+          </tr>
+        </thead>
+        <tbody>${mktRows}</tbody>
+        <thead>
+          <tr>
+            <th>三档行权价横向对比</th>
+            <th>样本数</th>
+            <th>✅ 未被行权</th>
+            <th>🟡 被行权</th>
+            <th>🔴 大幅亏损</th>
+            <th>总胜率</th>
+            <th>期望R倍数</th>
+          </tr>
+        </thead>
+        <tbody>${tierRows}</tbody>
+      </table>
+    `;
+  }
+
+  function renderBacktestLedgerTable(records, tk) {
+    const tbody = el("bt-ledger-tbody");
+    if (!tbody) return;
+
+    const filtered = records.filter((r) => {
+      const ev = (r.outcomes && r.outcomes[tk]) || (r.outcomes && r.outcomes.auto) || {};
+      if (state.btOutcomeFilter === "HEAVY_LOSS" && !ev.isHeavyLoss) return false;
+      if (state.btOutcomeFilter === "ASSIGNED" && !ev.isAssigned) return false;
+      if (state.btOutcomeFilter === "SAFE" && ev.isAssigned) return false;
+
+      if (state.btMktFilter === "cn_idx") {
+        if (!["CN_FUT:IM0", "CN_FUT:IF0", "CN_FUT:IH0"].includes(r.id)) return false;
+      } else if (state.btMktFilter !== "all" && r.market !== state.btMktFilter) {
+        return false;
+      }
+      return true;
+    });
+
+    if (!filtered.length) {
+      tbody.innerHTML = `<tr><td colspan="12" class="empty-cell">当前筛选条件下无记录</td></tr>`;
+      return;
+    }
+
+    tbody.innerHTML = filtered
+      .map((r) => {
+        const ev = (r.outcomes && r.outcomes[tk]) || (r.outcomes && r.outcomes.auto) || {};
+        const cur = r.currency || "";
+        const badgeCls =
+          ev.statusTone === "bull"
+            ? "badge-bull"
+            : ev.statusTone === "bear"
+            ? "badge-bear"
+            : ev.statusTone === "gold"
+            ? "badge-gold"
+            : "badge-neutral";
+        const pnlSign = ev.netContractPnl > 0 ? "+" : "";
+        const rSign = ev.rMultiple > 0 ? "+" : "";
+
+        return `
+          <tr data-id="${r.id}">
+            <td><strong>${r.cohortLabel}</strong> <small style="color:var(--text-muted)">→ ${r.evalDate.slice(5)}${r.isExpired ? "" : " (持有中)"}</small></td>
+            <td><strong>${r.name}</strong> <span style="color:var(--text-muted)">${r.symbol} · ${r.marketLabel}</span></td>
+            <td class="num gold-txt"><strong>${fmtNum(r.putScore, 1)}</strong></td>
+            <td class="num">${cur}${fmtSmart(r.entryPrice)}</td>
+            <td class="num gold-txt"><strong>${cur}${fmtSmart(ev.strike)}</strong></td>
+            <td class="num bull-txt">${fmtNum(ev.otmPct, 1)}%</td>
+            <td class="num">${cur}${fmtSmart(ev.breakeven)}</td>
+            <td class="num ${ev.touchedStrike ? "bear-txt" : ""}">${cur}${fmtSmart(ev.minLow)} <small>(${fmtSignPct(ev.maxDrawdownPct, 1)})</small></td>
+            <td class="num ${colorCls(ev.underlyingRetPct)}"><strong>${cur}${fmtSmart(ev.endPrice)}</strong> <small>(${fmtSignPct(ev.underlyingRetPct, 1)})</small></td>
+            <td><span class="badge ${badgeCls}">${ev.statusLabel}</span></td>
+            <td class="num">+${cur}${fmtSmart(ev.contractPremium)}</td>
+            <td class="num ${ev.netContractPnl >= 0 ? "bull-txt" : "bear-txt"}"><strong>${pnlSign}${cur}${fmtSmart(ev.netContractPnl)}</strong> <small>(${rSign}${fmtNum(ev.rMultiple, 2)}R)</small></td>
+          </tr>
+        `;
+      })
+      .join("");
+
+    tbody.querySelectorAll("tr[data-id]").forEach((tr) => {
+      tr.addEventListener("click", () => {
+        const id = tr.getAttribute("data-id");
+        selectInstrument(id, true);
+      });
+    });
+  }
+
   // ---------------- iPhone QR Code Modal & Offline Export ----------------
   async function openMobileModal() {
     const modal = el("mobile-modal");
@@ -1089,15 +1391,45 @@
 
     el("tier-pref-select")?.addEventListener("change", (e) => {
       state.tierPref = e.target.value;
+      state.btTier = e.target.value;
+      el("bt-tier-tabs")?.querySelectorAll("button").forEach((b) => {
+        b.classList.toggle("active", b.getAttribute("data-tier") === state.btTier);
+      });
       if (state.data) {
         renderTopPicks(state.data);
         renderCnIndexOptions(state.data);
         renderScreenerTable();
       }
+      if (state.btData) {
+        renderBacktestSection();
+      }
       if (state.selectedId) {
         const tierArg = state.tierPref === "auto" ? null : state.tierPref;
         loadInstrumentDetail(state.selectedId, tierArg, false);
       }
+    });
+
+    el("bt-tier-tabs")?.querySelectorAll("button").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        el("bt-tier-tabs").querySelectorAll("button").forEach((b) => b.classList.remove("active"));
+        btn.classList.add("active");
+        state.btTier = btn.getAttribute("data-tier") || "auto";
+        renderBacktestSection();
+      });
+    });
+
+    el("bt-outcome-tabs")?.querySelectorAll("button").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        el("bt-outcome-tabs").querySelectorAll("button").forEach((b) => b.classList.remove("active"));
+        btn.classList.add("active");
+        state.btOutcomeFilter = btn.getAttribute("data-out") || "all";
+        if (state.btData) renderBacktestLedgerTable(state.btData.records || [], state.btTier);
+      });
+    });
+
+    el("bt-mkt-filter")?.addEventListener("change", (e) => {
+      state.btMktFilter = e.target.value || "all";
+      if (state.btData) renderBacktestLedgerTable(state.btData.records || [], state.btTier);
     });
 
     el("btn-refresh")?.addEventListener("click", () => {
@@ -1186,6 +1518,7 @@
     window.addEventListener("resize", () => {
       state.klineChart?.resize();
       state.payoffChart?.resize();
+      state.btChart?.resize();
     });
   }
 
