@@ -1,0 +1,460 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="卖Put终端" />
+  <meta name="theme-color" content="#080c14" />
+  <link rel="manifest" href="/manifest.json" />
+  <link rel="apple-touch-icon" href="/static/app-icon.svg" />
+  <title>每周动态卖Put量化推荐终端 · 美股 / 美期货 / 中国期货 · Short Put Terminal</title>
+  <link rel="stylesheet" href="/static/style.css?v={{ asset_v }}" />
+  <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.1/dist/echarts.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.min.js"></script>
+</head>
+<body>
+  <div class="app">
+    <!-- 顶部导航栏：周期标识 + 全球波动率环境 + 全局参数控制 -->
+    <header class="topbar">
+      <div class="brand">
+        <div class="logo-badge">SP</div>
+        <div>
+          <div class="title-row">
+            <h1>每周动态卖Put量化推荐终端</h1>
+            <span class="week-pill" id="week-badge">加载周度周期…</span>
+          </div>
+          <p class="sub">美股核心龙头(CSP/Wheel) · 美国商品/股指期货 · 中国商品期货期权 · 成本底+波动率溢价+技术支撑五维模型</p>
+        </div>
+      </div>
+
+      <!-- 全球波动率与宏观定价锚 -->
+      <div class="macro-strip" id="macro-strip">
+        <div class="macro-pill">
+          <span class="m-label">VIX 标普隐波</span>
+          <strong class="m-val" id="m-vix">--</strong>
+          <span class="m-sub" id="m-vix-sub">--</span>
+        </div>
+        <div class="macro-pill">
+          <span class="m-label">VXN 纳指隐波</span>
+          <strong class="m-val" id="m-vxn">--</strong>
+          <span class="m-sub" id="m-vxn-sub">--</span>
+        </div>
+        <div class="macro-pill">
+          <span class="m-label">OVX 原油隐波</span>
+          <strong class="m-val" id="m-ovx">--</strong>
+          <span class="m-sub" id="m-ovx-sub">--</span>
+        </div>
+        <div class="macro-pill">
+          <span class="m-label">GVZ 黄金隐波</span>
+          <strong class="m-val" id="m-gvz">--</strong>
+          <span class="m-sub" id="m-gvz-sub">--</span>
+        </div>
+        <div class="macro-pill">
+          <span class="m-label">USD/CNY 汇率</span>
+          <strong class="m-val" id="m-fx">--</strong>
+          <span class="m-sub" id="m-us10y">10Y美债 --</span>
+        </div>
+      </div>
+
+      <!-- 策略周期与刷新控制 -->
+      <div class="top-controls">
+        <label class="ctrl-select" title="卖Put目标到期天数(DTE)，切换后全市场行权价与年化收益率实时重算">
+          <span>收租周期(DTE)</span>
+          <select id="dte-select">
+            <option value="7">7天 (周度高频)</option>
+            <option value="14">14天 (双周滚动)</option>
+            <option value="30" selected>30天 (月度主力·推荐)</option>
+            <option value="45">45天 (机构标准Theta甜点)</option>
+            <option value="60">60天 (远月高安全垫)</option>
+          </select>
+        </label>
+        <label class="ctrl-select" title="默认展示的行权价虚值档位">
+          <span>偏好档位</span>
+          <select id="tier-pref-select">
+            <option value="auto" selected>智能匹配最佳档</option>
+            <option value="conservative">保守高胜率档 (Δ≈-0.15)</option>
+            <option value="balanced">平衡甜点档 (Δ≈-0.25)</option>
+            <option value="aggressive">进取接货档 (Δ≈-0.35)</option>
+          </select>
+        </label>
+        <div class="live-status" id="live-status">
+          <span class="status-dot" id="status-dot"></span>
+          <span id="status-text">同步跨市场行情…</span>
+        </div>
+        <button type="button" class="btn btn-outline" id="btn-mobile-modal" title="在iPhone上扫码看盘或导出手机离线周报">📱 iPhone看盘</button>
+        <button type="button" class="btn btn-gold" id="btn-refresh">立即重算推荐</button>
+      </div>
+    </header>
+
+    <!-- 宏观卖方环境横幅与核心统计KPI -->
+    <section class="regime-banner" id="regime-banner">
+      <div class="regime-left">
+        <span class="regime-tag" id="regime-tag">卖方环境诊断</span>
+        <span class="regime-text" id="regime-text">正在评估全球隐含波动率曲面与大宗商品成本带分布…</span>
+      </div>
+      <div class="kpi-group">
+        <div class="kpi-item">
+          <span class="k-lbl">监控期权品种</span>
+          <strong class="k-num" id="kpi-total">--</strong>
+        </div>
+        <div class="kpi-item">
+          <span class="k-lbl">贴近/破成本底品种</span>
+          <strong class="k-num bull-txt" id="kpi-below-cost">--</strong>
+        </div>
+        <div class="kpi-item">
+          <span class="k-lbl">高IV溢价品种(IVR≥60%)</span>
+          <strong class="k-num gold-txt" id="kpi-high-ivr">--</strong>
+        </div>
+        <div class="kpi-item">
+          <span class="k-lbl">目标到期日(周五)</span>
+          <strong class="k-num" id="kpi-expiry">--</strong>
+        </div>
+      </div>
+    </section>
+
+    <!-- 专项板块：中金所 A股三大股指期权 (中证1000 MO · 沪深300 IO · 上证50 HO) 卖Put深度分析 -->
+    <section class="section-block cn-idx-section" id="cn-idx-section">
+      <div class="section-header">
+        <div>
+          <h2>A股三大股指期权卖Put专题分析 · 中证1000 (IM/MO) · 沪深300 (IF/IO) · 上证50 (IH/HO)</h2>
+          <p class="sub">中金所股指期权（100元/点）实时点位、隐波分位、远月贴水保护、三档推荐行权价(保守/平衡/进取)与保证金年化收益；点击卡片可在下方工作台查看K线与中金所实时期权链</p>
+        </div>
+        <div class="legend-pills">
+          <span class="badge badge-bull">MO 中证1000：高隐波+深贴水保护</span>
+          <span class="badge badge-gold">IO 沪深300 / HO 上证50：宽基ETF与高股息托底</span>
+        </div>
+      </div>
+      <div class="cn-index-grid" id="cn-index-grid">
+        <div class="skeleton-box">正在加载中证1000、沪深300、上证50实时期权分析…</div>
+      </div>
+    </section>
+
+    <!-- 第一部分：本周三大市场精选卖Put推荐榜 (美股 / 美期货 / 中国期货 三栏并列) -->
+    <section class="section-block" id="top-picks-section">
+      <div class="section-header">
+        <div>
+          <h2>本周三大市场动态精选 · 最佳卖Put品种 (Weekly Top Picks)</h2>
+          <p class="sub">按「底部安全垫(30) + 波动率溢价(25) + 技术止跌支撑(20) + 趋势防飞刀(15) + 流动性护城河(10)」综合评分排序，同板块自动分散；点击任意卡片进入下方深度工作台</p>
+        </div>
+        <div class="legend-pills">
+          <span class="badge badge-bull">破成本铁底 / 龙头回调接货</span>
+          <span class="badge badge-gold">高IV溢价 / 支撑位顺势收租</span>
+        </div>
+      </div>
+
+      <div class="three-market-grid">
+        <!-- 1. 美股与ETF -->
+        <div class="market-column">
+          <div class="market-col-header us-stk-hdr">
+            <div class="m-hdr-left">
+              <span class="m-flag">US</span>
+              <div>
+                <h3>美股与核心ETF · 卖Put精选</h3>
+                <span class="m-sub">Cash-Secured Put / Wheel低位接货策略</span>
+              </div>
+            </div>
+            <span class="count-pill" id="top-count-usstk">Top 6</span>
+          </div>
+          <div class="pick-cards" id="picks-us-stk">
+            <div class="skeleton-box">正在计算美股期权IV偏度与支撑位…</div>
+          </div>
+        </div>
+
+        <!-- 2. 美国期货 -->
+        <div class="market-column">
+          <div class="market-col-header us-fut-hdr">
+            <div class="m-hdr-left">
+              <span class="m-flag">CME</span>
+              <div>
+                <h3>美国期货期权 · 卖Put精选</h3>
+                <span class="m-sub">COMEX / NYMEX / CBOT / ICE 全球定价锚</span>
+              </div>
+            </div>
+            <span class="count-pill" id="top-count-usfut">Top 6</span>
+          </div>
+          <div class="pick-cards" id="picks-us-fut">
+            <div class="skeleton-box">正在计算美期货成本锚与Black-76期权定价…</div>
+          </div>
+        </div>
+
+        <!-- 3. 中国期货 -->
+        <div class="market-column">
+          <div class="market-col-header cn-fut-hdr">
+            <div class="m-hdr-left">
+              <span class="m-flag">CN</span>
+              <div>
+                <h3>中国期货期权 · 卖Put精选</h3>
+                <span class="m-sub">上期所 / 大商所 / 郑商所 / 广期所 产业成本底</span>
+              </div>
+            </div>
+            <span class="count-pill" id="top-count-cnfut">Top 6</span>
+          </div>
+          <div class="pick-cards" id="picks-cn-fut">
+            <div class="skeleton-box">正在计算国内商品现金成本与主力期权行权价…</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 第二部分：单品种深度卖Put工作台 (K线成本行权价透视 + 损益模拟器 + 3档方案 + 投研手册) -->
+    <section class="section-block workstation-section" id="workstation-section">
+      <div class="section-header ws-top-bar">
+        <div class="ws-title-group">
+          <span class="ws-market-badge" id="ws-market-badge">--</span>
+          <h2 id="ws-title">正在加载品种详情…</h2>
+          <span class="ws-symbol-sub" id="ws-sub">--</span>
+          <span class="badge" id="ws-archetype-badge">--</span>
+        </div>
+        <div class="ws-price-group">
+          <div class="ws-px-item">
+            <span class="lbl">最新现价</span>
+            <strong class="val" id="ws-price">--</strong>
+          </div>
+          <div class="ws-px-item">
+            <span class="lbl">日涨跌 / 周涨跌</span>
+            <strong class="val" id="ws-chg">--</strong>
+          </div>
+          <div class="ws-px-item">
+            <span class="lbl">ATM隐波(IV) / IV分位</span>
+            <strong class="val gold-txt" id="ws-iv">--</strong>
+          </div>
+          <div class="ws-px-item">
+            <span class="lbl">RSI(14) / 5年分位</span>
+            <strong class="val" id="ws-rsi-pct">--</strong>
+          </div>
+          <div class="ws-px-item">
+            <span class="lbl">卖Put综合评分</span>
+            <strong class="val score-highlight" id="ws-score">--</strong>
+          </div>
+        </div>
+      </div>
+
+      <div class="ws-grid">
+        <!-- 左栏：K线图(带行权价/成本线/布林下轨) + 卖Put到期/期中损益曲线与自定义模拟器 -->
+        <div class="ws-left">
+          <!-- K线与关键位透视图 -->
+          <div class="panel chart-box">
+            <div class="panel-header">
+              <div>
+                <h3>日K线 · 推荐卖Put行权价与产业成本/支撑位透视</h3>
+                <p class="sub" id="kline-legend-sub">直观检验卖Put行权价是否位于完全成本、现金成本、布林下轨与60日均线下方</p>
+              </div>
+              <div class="chart-badges" id="kline-key-levels"></div>
+            </div>
+            <div class="echart-canvas" id="kline-chart"></div>
+          </div>
+
+          <!-- 损益曲线与交互式压力测试模拟器 -->
+          <div class="panel payoff-box">
+            <div class="panel-header">
+              <div>
+                <h3>卖Put到期损益(Expiration) vs 期中理论损益(T/2) & 自定义压力测试</h3>
+                <p class="sub">绿色区间为到期盈利区（标的收盘高于盈亏平衡点即获利），可微调行权价、手数与波动率实时推演</p>
+              </div>
+              <div class="sim-controls">
+                <label class="sim-field">
+                  <span>行权价(K)</span>
+                  <input type="number" id="sim-strike" step="any" />
+                </label>
+                <label class="sim-field">
+                  <span>到期天数(DTE)</span>
+                  <input type="number" id="sim-dte" min="3" max="180" value="30" />
+                </label>
+                <label class="sim-field">
+                  <span>隐波IV(%)</span>
+                  <input type="number" id="sim-iv" step="0.5" min="5" max="200" />
+                </label>
+                <label class="sim-field">
+                  <span>手数/张数</span>
+                  <input type="number" id="sim-lots" min="1" max="500" value="1" />
+                </label>
+                <button type="button" class="btn btn-sm btn-gold" id="btn-run-sim">推演损益</button>
+              </div>
+            </div>
+
+            <!-- 模拟结果核心指标条 -->
+            <div class="sim-summary-strip" id="sim-summary-strip"></div>
+
+            <div class="echart-canvas payoff-canvas" id="payoff-chart"></div>
+          </div>
+        </div>
+
+        <!-- 右栏：三档行权价方案矩阵 + 五维评分拆解 + 投研手册 + 真实期权链核验 -->
+        <div class="ws-right">
+          <!-- 1. 三档行权价方案 -->
+          <div class="panel">
+            <div class="panel-header">
+              <div>
+                <h3>三档卖Put行权价执行方案（点击卡片切换图表与模拟器）</h3>
+                <p class="sub" id="tiers-dte-sub">基于Black-Scholes / Black-76与波动率偏度(Skew)精确求解</p>
+              </div>
+            </div>
+            <div class="tiers-grid" id="tiers-grid"></div>
+          </div>
+
+          <!-- 2. 五维量化评分拆解 + 关键价格阶梯 -->
+          <div class="panel">
+            <div class="panel-header">
+              <div>
+                <h3>卖Put五维量化评分拆解 & 下方多层防线阶梯</h3>
+                <p class="sub">满分100分：底部安全垫(30) + 波动率溢价(25) + 技术止跌(20) + 趋势过滤(15) + 护城河(10)</p>
+              </div>
+            </div>
+            <div class="factors-and-ladder">
+              <div class="factor-bars" id="ws-factor-bars"></div>
+              <div class="price-ladder" id="ws-price-ladder"></div>
+            </div>
+          </div>
+
+          <!-- 3. 本周实战卖Put投研手册 -->
+          <div class="panel">
+            <div class="panel-header">
+              <div>
+                <h3>本周卖Put实战投研手册与风控纪律</h3>
+                <p class="sub">入场逻辑 · 行权价依据 · 70%止盈法则 · 破位展期(Roll)预案</p>
+              </div>
+            </div>
+            <div class="playbook-box" id="ws-playbook"></div>
+          </div>
+
+          <!-- 4. 场内实时期权链抽样核验 (美股/ETF及代理ETF) -->
+          <div class="panel">
+            <div class="panel-header">
+              <div>
+                <h3>市场真实期权链核验 (Live Option Chain Verification)</h3>
+                <p class="sub" id="optchain-sub">拉取交易所真实挂单Bid/Ask、隐波IV与持仓量OI对照</p>
+              </div>
+              <button type="button" class="btn btn-sm btn-ghost" id="btn-load-chain">刷新期权链</button>
+            </div>
+            <div class="optchain-wrap" id="optchain-wrap">
+              <div class="empty-note">正在查询实时期权链报价…</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 第三部分：全市场79品种卖Put动态评分总览表 -->
+    <section class="section-block" id="screener-section">
+      <div class="section-header">
+        <div>
+          <h2>全市场期权品种卖Put动态量化总榜 (79大高流动性标的)</h2>
+          <p class="sub">支持按市场、策略类型、关键词筛选及多列排序；点击任意行可在上方深度工作台查看K线与损益图</p>
+        </div>
+
+        <div class="table-filters">
+          <div class="seg" id="mkt-filter-tabs">
+            <button type="button" data-mkt="all" class="active">全部市场 (79)</button>
+            <button type="button" data-mkt="cn_idx">A股三大股指 (3)</button>
+            <button type="button" data-mkt="us_stk">美股与ETF (28)</button>
+            <button type="button" data-mkt="us_fut">美国期货 (18)</button>
+            <button type="button" data-mkt="cn_fut">中国期货 (33)</button>
+          </div>
+          <select id="archetype-filter" class="filter-select">
+            <option value="all">全部卖Put策略类型</option>
+            <option value="破现金成本">破现金成本·铁底收租</option>
+            <option value="贴近产业成本">贴近产业成本·底部磨底</option>
+            <option value="核心龙头回调">核心龙头回调·以接货之心卖Put</option>
+            <option value="高IV恐慌溢价">高IV恐慌溢价·波动率回归</option>
+            <option value="慢牛均线支撑">慢牛均线/关键支撑顺势收租</option>
+          </select>
+          <input type="search" id="table-search" class="search-input" placeholder="搜索代码 / 名称 / 板块（如 NVDA、豆粕、纯碱、原油）…" />
+        </div>
+      </div>
+
+      <div class="table-container">
+        <table class="screener-table" id="screener-table">
+          <thead>
+            <tr>
+              <th data-sort="rank">#</th>
+              <th data-sort="name">品种 / 代码</th>
+              <th data-sort="market">市场 / 交易所</th>
+              <th data-sort="putScore" class="num sort-desc">卖Put评分 ▼</th>
+              <th>策略定性标签</th>
+              <th data-sort="price" class="num">最新现价</th>
+              <th data-sort="ret1wPct" class="num">近1周%</th>
+              <th data-sort="rsi14" class="num">RSI(14)</th>
+              <th data-sort="pct5y" class="num">5年分位</th>
+              <th data-sort="vsCost" class="num">较完全成本 / 回调</th>
+              <th data-sort="atmIvPct" class="num">隐波IV (IVR)</th>
+              <th data-sort="strike" class="num">推荐卖Put行权价</th>
+              <th data-sort="otmPct" class="num">安全垫(OTM)</th>
+              <th data-sort="breakeven" class="num">盈亏平衡点(缓冲)</th>
+              <th data-sort="contractPremium" class="num">单手权利金</th>
+              <th data-sort="popPct" class="num">胜率(PoP)</th>
+              <th data-sort="annMargin" class="num">保证金年化</th>
+              <th data-sort="annCash" class="num">全额担保年化</th>
+            </tr>
+          </thead>
+          <tbody id="screener-tbody">
+            <tr><td colspan="18" class="empty-cell">正在加载全市场76个期权品种量化数据…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <footer class="app-footer">
+      <p>量化模型说明：美股采用 Black-Scholes-Merton 定价，美期货与中国期货采用 Black-76 期货期权模型，并引入虚值看跌波动率偏度(OTM Put Skew)修正。大宗商品成本中枢为行业公开研究锚点，仅供期权卖方评估底部安全垫参考，不构成直接投资建议。</p>
+    </footer>
+  </div>
+
+  <!-- iPhone 手机端底部拇指快捷导航栏 (仅移动端显示) -->
+  <nav class="mobile-bottom-nav" id="mobile-bottom-nav">
+    <button type="button" data-target="cn-idx-section" class="active">🇨🇳 三大股指</button>
+    <button type="button" data-target="top-picks-section">🏆 三市场精选</button>
+    <button type="button" data-target="workstation-section">🔬 期权工作站</button>
+    <button type="button" data-target="screener-section">📋 79品种全表</button>
+  </nav>
+
+  <!-- iPhone 扫码看盘 & 离线周报导出弹窗 -->
+  <div class="modal-backdrop" id="mobile-modal" style="display:none;">
+    <div class="modal-card">
+      <div class="modal-hdr">
+        <h3>📱 在 iPhone 手机上查看卖Put推荐终端</h3>
+        <button type="button" class="modal-close" id="btn-close-modal">✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="mobile-method-grid">
+          <!-- 方式一：同一 Wi-Fi 扫码秒开 -->
+          <div class="mm-box">
+            <div class="mm-badge bull-txt">方式一 · 同一 Wi-Fi 实时交互 (推荐)</div>
+            <h4>用 iPhone 原生「相机」扫码直接打开</h4>
+            <p class="sub">请确保 iPhone 与本台电脑连接在同一个路由器 Wi-Fi 下，打开手机相机对准下方二维码：</p>
+            <div class="qr-box" id="mobile-qr-box">正在生成二维码…</div>
+            <div class="url-copy-row">
+              <code id="mobile-lan-url">http://192.168.3.127:5058</code>
+              <button type="button" class="btn btn-sm btn-outline" id="btn-copy-lan-url">复制链接</button>
+            </div>
+            <div class="pwa-tip">
+              <strong>💡 变成 iPhone 桌面独立 App：</strong><br/>
+              在 iPhone Safari 打开后，点击底部中间的 <strong>「分享 ⬆️」</strong> 按钮，往下划选择 <strong>「添加到主屏幕」</strong>，即可在 iPhone 桌面生成专属图标全屏看盘！
+            </div>
+          </div>
+
+          <!-- 方式二：出门在外 / 5G / 电脑关机离线看盘 -->
+          <div class="mm-box">
+            <div class="mm-badge gold-txt">方式二 · 出门在外 4G/5G 或电脑关机也能看</div>
+            <h4>一键生成「iPhone 独立便携版周报 (.html)」</h4>
+            <p class="sub">将本周 <strong>中证1000/沪深300/上证50 + 美股/美期/中期的全部79个品种三档行权价</strong> 打包为单个离线交互文件，发到<strong>微信「文件传输助手」</strong>或 <strong>AirDrop</strong>，在 iPhone 上随时随地免联网点开筛选：</p>
+            <div style="margin: 16px 0; display:flex; flex-direction:column; gap:10px;">
+              <a href="/api/export-mobile?dte=30" id="link-export-mobile" class="btn btn-gold" style="text-align:center; text-decoration:none; padding:11px 16px; font-size:14px;">
+                📥 下载 iPhone 独立便携版周报 (.html)
+              </a>
+            </div>
+            <div class="pwa-tip">
+              <strong>使用方法：</strong><br/>
+              1. 点击上方按钮下载单文件周报；<br/>
+              2. 拖入电脑端<strong>微信「文件传输助手」</strong>或通过 <strong>AirDrop</strong> 发送至 iPhone；<br/>
+              3. 在 iPhone 微信里点击该文件 → 右上角「用其他应用打开 / Safari打开」，即可在户外 5G 甚至飞机上自由切换三档行权价与四大市场！
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/app.js?v={{ asset_v }}"></script>
+</body>
+</html>
