@@ -305,11 +305,31 @@ def get_historical_review(hold_trading_days: int = 20, num_cohorts: int = 12, fo
             entry_date_str = scored_at_t0[0]["entryDate"]
             eval_date_str = scored_at_t0[0]["evalDate"]
 
-            # Strictly filter for varieties with putScore >= 90.0 (评分等于或超过90分)
-            weekly_portfolio = [
+            # Strictly filter for varieties with putScore >= 80.0 (评分等于或超过80分)
+            scored_80 = [
                 x for x in scored_at_t0
-                if float(x["res"].get("putScore", 0.0)) >= 90.0
+                if float(x["res"].get("putScore", 0.0)) >= 80.0
             ]
+            idx_items = [x for x in scored_80 if x["inst"]["id"] in ("CN_FUT:IM0", "CN_FUT:IF0", "CN_FUT:IH0")]
+            us_stk_items = [x for x in scored_80 if x["inst"]["market"] == "us_stk"]
+            us_fut_items = [x for x in scored_80 if x["inst"]["market"] == "us_fut"]
+            cn_comm_items = [
+                x for x in scored_80
+                if x["inst"]["market"] == "cn_fut" and x["inst"]["id"] not in ("CN_FUT:IM0", "CN_FUT:IF0", "CN_FUT:IH0")
+            ]
+
+            def _pick_top(items_list: List[Dict[str, Any]], n: int = 4) -> List[Dict[str, Any]]:
+                rows_only = [x["res"] for x in items_list]
+                picked_rows = _select_diversified_top(rows_only, top_n=n, max_per_sector=2)
+                picked_ids = {r["id"] for r in picked_rows}
+                return [x for x in items_list if x["inst"]["id"] in picked_ids]
+
+            weekly_portfolio = (
+                idx_items
+                + _pick_top(us_stk_items, 4)
+                + _pick_top(us_fut_items, 4)
+                + _pick_top(cn_comm_items, 4)
+            )
 
             cohort_label = f"第{c_idx + 1}期 ({entry_date_str[5:]})"
             cohort_records: List[Dict[str, Any]] = []

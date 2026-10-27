@@ -661,10 +661,10 @@ def get_weekly_recommendations(
         us_fut_list = [r for r in all_rows if r["market"] == "us_fut"]
         cn_fut_list = [r for r in all_rows if r["market"] == "cn_fut"]
 
-        # Weekly Top Picks per market: strictly filter for putScore >= 90.0 (评分等于或超过90分)
-        top_us_stk = [r for r in us_stk_list if r["putScore"] >= 90.0]
-        top_us_fut = [r for r in us_fut_list if r["putScore"] >= 90.0]
-        top_cn_fut = [r for r in cn_fut_list if r["putScore"] >= 90.0]
+        # Weekly Top Picks per market: strictly filter for putScore >= 80.0 (评分等于或超过80分)
+        top_us_stk = _select_diversified_top([r for r in us_stk_list if r["putScore"] >= 80.0], top_n=6, max_per_sector=2)
+        top_us_fut = _select_diversified_top([r for r in us_fut_list if r["putScore"] >= 80.0], top_n=6, max_per_sector=2)
+        top_cn_fut = _select_diversified_top([r for r in cn_fut_list if r["putScore"] >= 80.0], top_n=6, max_per_sector=2)
 
         # Dedicated A-share Index Options trio (IM0, IF0, IH0) ordered specifically
         idx_order = {"CN_FUT:IM0": 0, "CN_FUT:IF0": 1, "CN_FUT:IH0": 2}
