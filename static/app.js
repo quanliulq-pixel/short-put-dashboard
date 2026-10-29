@@ -274,7 +274,7 @@
             const tr = tiers[tk];
             if (!tr) return "";
             const isRec = tk === recKey ? "rec" : "";
-            const shortLbl = tk === "conservative" ? "保守 Δ-0.15" : tk === "balanced" ? "平衡 Δ-0.25" : "进取 Δ-0.35";
+            const shortLbl = `${tk === "conservative" ? "保守" : tk === "balanced" ? "平衡" : "进取"} Δ${fmtNum(tr.delta, 2)}`;
             return `
               <div class="idx-tier-box ${isRec}">
                 <div class="itb-lbl">${shortLbl}${tk === recKey ? " ★" : ""}</div>
@@ -448,7 +448,7 @@
             <div class="tc-row"><span>单手权利金</span><strong class="gold-txt">${cur}${fmtSmart(t.contractPremium)} (${cur}${fmtSmart(t.premium)}/单)</strong></div>
             <div class="tc-row"><span>盈亏平衡点(缓冲)</span><strong class="cyan-txt">${cur}${fmtSmart(t.breakeven)} (-${fmtNum(t.breakevenBufferPct, 1)}%)</strong></div>
             <div class="tc-row"><span>ATR安全垫倍数</span><strong class="bull-txt">${fmtNum(t.atrBufferMultiple, 1)} 倍日均ATR</strong></div>
-            <div class="tc-row"><span>肥尾校准胜率(PoP)</span><strong class="bull-txt">${fmtNum(t.popPct, 1)}%</strong></div>
+            <div class="tc-row"><span>经验肥尾折扣胜率(PoP)</span><strong class="bull-txt">${fmtNum(t.popPct, 1)}%</strong></div>
             <div class="tc-row"><span>单手保证金占用</span><strong>${cur}${fmtSmart(t.marginReq)}</strong></div>
             <div class="tc-row"><span>保证金口径年化</span><strong class="gold-txt">${fmtNum(t.annReturnMarginPct, 1)}%</strong></div>
             <div class="tc-row"><span>全额担保年化 / 收益波动比</span><strong>${fmtNum(t.annReturnCashPct, 1)}% (${fmtNum(t.returnToVolRatio, 2)})</strong></div>
@@ -472,7 +472,7 @@
     const sb = a.scoreBreakdown || {};
     const factors = [
       { label: "底部安全垫与估值锚 (成本×趋势矩阵)", val: sb.floor || 0, max: 30 },
-      { label: "真实VRP溢价与ATR风险调整收益", val: sb.vol || 0, max: 25 },
+      { label: "估算VRP溢价与ATR风险调整收益 (IV为模型估算)", val: sb.vol || 0, max: 25 },
       { label: "技术支撑与右侧企稳确认 (防下轨开口)", val: sb.tech || 0, max: 20 },
       { label: `多周期趋势结构 (${a.trendRegime || "均线共振"})`, val: sb.trend || 0, max: 15 },
       { label: `期权盘口深度 (${a.liquidityLabel || "主力活跃"})`, val: sb.moat || 0, max: 10 },

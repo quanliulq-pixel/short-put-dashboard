@@ -449,19 +449,59 @@ def get_macro_vol_regime(force: bool = False) -> Dict[str, Any]:
     return cached("macro_vol_regime", 120.0, _load, force=force)
 
 
+def _solve_cffex_put_iv(spot: float, strike: float, dte: int, put_price: float, r: float = 0.02) -> float:
+    """Bisection solver for CFFEX Put implied volatility (in %) from market mid/last price."""
+    if spot <= 0 or strike <= 0 or put_price <= 0:
+        return 20.0
+    T = max(int(dte), 1) / 365.0
+    sqrt_T = math.sqrt(T)
+    df_r = math.exp(-r * T)
+    intrinsic = max(0.0, (strike - spot) * df_r)
+    if put_price <= intrinsic + 0.05:
+        return 8.0
+
+    lo, hi = 0.04, 1.50
+    for _ in range(28):
+        mid_iv = 0.5 * (lo + hi)
+        vol_sqrt_T = mid_iv * sqrt_T
+        d1 = (math.log(spot / strike) + 0.5 * mid_iv * mid_iv * T) / vol_sqrt_T
+        d2 = d1 - vol_sqrt_T
+        nd1 = 0.5 * (1.0 + math.erf(-d1 / math.sqrt(2.0)))
+        nd2 = 0.5 * (1.0 + math.erf(-d2 / math.sqrt(2.0)))
+        theo = df_r * (strike * nd2 - spot * nd1)
+        if theo > put_price:
+            hi = mid_iv
+        else:
+            lo = mid_iv
+    return round(0.5 * (lo + hi) * 100.0, 1)
+
+
 def _fetch_cffex_option_chain(inst: Dict[str, Any], target_dte: int = 30) -> Dict[str, Any]:
     """Fetch real-time CFFEX index option chain (MO / IO / HO) from Sina OptionService."""
+    from http_utils import _third_friday
+
     prod = inst["cffex_opt"]  # 'mo' | 'io' | 'ho'
     bars = get_instrument_bars(inst["id"], force=False)
     spot = float(bars[-1]["c"]) if bars else 0.0
     if spot <= 0:
         return {"available": False, "note": "无法获取股指现价"}
 
-    now = datetime.now()
-    # Choose next month or +2 month based on target_dte
-    add_m = 1 if target_dte <= 38 else 2
-    y = now.year + (now.month + add_m - 1) // 12
-    m = (now.month + add_m - 1) % 12 + 1
+    today = datetime.now().date()
+    # Pick the monthly contract (current, +1m, or +2m) whose 3rd-Friday DTE is closest to target_dte (and >= 5 days)
+    best_ym = (today.year, today.month)
+    best_diff = 9999
+    best_exp_date = today
+    for add_m in (0, 1, 2, 3):
+        cy = today.year + (today.month + add_m - 1) // 12
+        cm = (today.month + add_m - 1) % 12 + 1
+        exp_d = _third_friday(cy, cm)
+        dte_cand = (exp_d - today).days
+        if dte_cand >= 5 and abs(dte_cand - target_dte) < best_diff:
+            best_diff = abs(dte_cand - target_dte)
+            best_ym = (cy, cm)
+            best_exp_date = exp_d
+
+    y, m = best_ym
     pinzhong = f"{prod}{str(y)[-2:]}{m:02d}"
 
     url = (
@@ -473,7 +513,7 @@ def _fetch_cffex_option_chain(inst: Dict[str, Any], target_dte: int = 30) -> Dic
     if not down:
         return {"available": False, "note": f"暂未获取到 {pinzhong} 实时期权链"}
 
-    actual_dte = max(7, int(target_dte))
+    actual_dte = max(1, (best_exp_date - today).days)
     rows: List[Dict[str, Any]] = []
     for item in down:
         if len(item) < 8:
@@ -493,6 +533,7 @@ def _fetch_cffex_option_chain(inst: Dict[str, Any], target_dte: int = 30) -> Dic
         vol = int(_fnum(item[0]) or 0) + int(_fnum(item[4]) or 0)
         otm_pct = round((spot - k) / spot * 100.0, 2)
         ann_cash = round((mid / k) * (365.0 / actual_dte) * 100.0, 1) if k > 0 else 0.0
+        solved_iv = _solve_cffex_put_iv(spot, k, actual_dte, mid if mid > 0 else last_p)
         rows.append(
             {
                 "contractSymbol": sym_str.upper(),
@@ -502,7 +543,7 @@ def _fetch_cffex_option_chain(inst: Dict[str, Any], target_dte: int = 30) -> Dic
                 "ask": round(ask, 1),
                 "mid": round(mid, 1),
                 "lastPrice": round(last_p, 1),
-                "ivPct": 22.0,
+                "ivPct": solved_iv,
                 "volume": vol,
                 "openInterest": oi,
                 "annCashReturnPct": ann_cash,
@@ -516,7 +557,7 @@ def _fetch_cffex_option_chain(inst: Dict[str, Any], target_dte: int = 30) -> Dic
         "isProxy": False,
         "currency": "¥",
         "spot": round(spot, 1),
-        "expiry": f"20{pinzhong[-4:-2]}-{pinzhong[-2:]} (中金所第3个周五)",
+        "expiry": f"{best_exp_date.strftime('%Y-%m-%d')} (中金所到期日)",
         "dte": actual_dte,
         "puts": rows[:14],
         "updatedAt": now_bj(),

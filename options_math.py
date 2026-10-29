@@ -3,9 +3,8 @@
 Quantitative Option Pricing, Greeks, Strike Solver & Payoff Engine for Short Put Strategies.
 Supports:
 - Black-Scholes-Merton (Stocks/ETFs)
-- Black-76 (Commodity/Financial Futures)
-- CFFEX Index Option Basis Drift Calibration (MO/IO/HO)
-- Cornish-Fisher Left-Tail Fat-Tail (Kurtosis/Skew) Strike & Probability Adjustment
+- Black-76 (Commodity/Financial Futures, incl. CFFEX MO/IO/HO priced off the index futures)
+- Empirical left-tail haircut (heuristic fat-tail discount on strike & probability; NOT a full Cornish-Fisher expansion)
 - Risk-Adjusted Carry Metrics (ATR Safety Cushion Multiple, Return-to-Vol Ratio, Theta/Vega)
 """
 from __future__ import annotations
@@ -17,12 +16,10 @@ from typing import Any, Dict, List, Optional
 _STD_NORM = NormalDist(0.0, 1.0)
 SQRT_2PI = math.sqrt(2.0 * math.pi)
 
-# Empirical annualized futures discount (basis drift) for CFFEX index options
-_CFFEX_BASIS_DRIFT: Dict[str, float] = {
-    "IM0": -0.075,  # 中证1000常年贴水年化约 6%~9%，对现货认沽期权构成额外定价偏移
-    "IF0": -0.025,  # 沪深300微幅贴水/分红率偏移
-    "IH0": -0.020,  # 上证50高分红率偏移
-}
+# CFFEX index options (MO/IO/HO): the engine prices off the IM0/IF0/IH0 futures price with Black-76.
+# A futures price already embeds the index discount (贴水), so an extra drift here would double-count it.
+# Keep b = 0 for all futures (standard Black-76). Left as an explicit, empty override table.
+_CFFEX_BASIS_DRIFT: Dict[str, float] = {}
 
 # Asset-specific left-tail excess kurtosis factor (0.0 = Gaussian, higher = fatter left tail)
 _FAT_TAIL_FACTOR: Dict[str, float] = {
@@ -154,7 +151,7 @@ def price_put_and_greeks(
     breakeven = max(strike - put_price, strike * 0.5)
     d2_be = (math.log(spot / breakeven) + (b - 0.5 * sigma * sigma) * T) / vol_sqrt_T
 
-    # Cornish-Fisher left-tail penalty: real market returns have heavier left tails than Gaussian
+    # Empirical left-tail haircut (heuristic): real returns have heavier left tails than Gaussian
     tail_haircut = 1.0 + 0.18 * fat_tail
     d2_be_adj = d2_be / tail_haircut if d2_be > 0 else d2_be * tail_haircut
     d2_otm_adj = d2 / tail_haircut if d2 > 0 else d2 * tail_haircut
@@ -187,7 +184,7 @@ def solve_strike_for_delta(
     fat_tail: float = 0.12,
 ) -> float:
     """
-    Analytical inverse-Delta strike solver for OTM Put with Cornish-Fisher fat-tail buffer.
+    Analytical inverse-Delta strike solver for OTM Put with a heuristic fat-tail buffer.
     Assets with high left-tail kurtosis automatically require deeper OTM strikes for the same target risk.
     """
     T = max(int(dte), 1) / 365.0

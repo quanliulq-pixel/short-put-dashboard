@@ -17,7 +17,9 @@ Key Institutional Upgrades:
 """
 from __future__ import annotations
 
-from datetime import datetime
+import calendar
+from concurrent.futures import ThreadPoolExecutor
+from datetime import date, datetime
 import logging
 import math
 from typing import Any, Dict, List, Optional, Tuple
@@ -27,7 +29,7 @@ from data_engine import (
     get_instrument_bars,
     get_macro_vol_regime,
 )
-from http_utils import cached, get_week_context, now_bj
+from http_utils import cached, get_week_context, load_pickle, now_bj, save_pickle
 from options_math import build_payoff_curve, build_put_tiers
 from universe import ALL_INSTRUMENTS, get_instrument
 
@@ -151,9 +153,53 @@ _US_STK_EARNINGS_MONTH_DAYS: Dict[str, List[Tuple[int, int]]] = {
 }
 
 
+def _fetch_real_earnings_dates() -> Dict[str, List[str]]:
+    """
+    Fetch upcoming earnings dates from Yahoo via yfinance (if installed & reachable).
+    Result is cached in memory (6h) and on disk (24h). Returns {symbol: ["YYYY-MM-DD", ...]}.
+    Any failure silently falls back to the approximate calendar table above.
+    """
+
+    def _load() -> Dict[str, List[str]]:
+        disk = load_pickle("earnings_dates_v1.pkl", max_age_sec=86400.0)
+        if isinstance(disk, dict) and disk:
+            return disk
+        try:
+            import yfinance as yf  # optional dependency
+        except Exception:
+            return {}
+
+        def _one(sym: str) -> Tuple[str, List[str]]:
+            try:
+                cal = yf.Ticker(sym).calendar
+                raw = cal.get("Earnings Date") if isinstance(cal, dict) else None
+                if not raw:
+                    return sym, []
+                if not isinstance(raw, (list, tuple)):
+                    raw = [raw]
+                return sym, [str(x)[:10] for x in raw if x]
+            except Exception:
+                return sym, []
+
+        out: Dict[str, List[str]] = {}
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            for sym, dates in pool.map(_one, list(_US_STK_EARNINGS_MONTH_DAYS.keys())):
+                if dates:
+                    out[sym] = dates
+        if out:
+            save_pickle("earnings_dates_v1.pkl", out)
+        return out
+
+    try:
+        return cached("earnings_dates", 6 * 3600.0, _load)
+    except Exception:
+        return {}
+
+
 def _check_earnings_risk(inst: Dict[str, Any], asof_str: str, target_dte: int) -> Optional[Dict[str, Any]]:
     """
     Detect if a single US stock has a quarterly earnings report within the option's DTE window.
+    Priority: real Yahoo earnings date -> approximate fiscal calendar fallback.
     """
     if inst["market"] != "us_stk":
         return None
@@ -166,28 +212,42 @@ def _check_earnings_risk(inst: Dict[str, Any], asof_str: str, target_dte: int) -
     except Exception:
         cur_dt = datetime.now().date()
 
+    candidates: List[date] = []
+    source = "估算"
+    real_dates = _fetch_real_earnings_dates().get(sym) or []
+    for ds in real_dates:
+        try:
+            candidates.append(datetime.strptime(ds, "%Y-%m-%d").date())
+        except ValueError:
+            continue
+    if candidates:
+        source = "Yahoo"
+    else:
+        for y in (cur_dt.year, cur_dt.year + 1):
+            for m, d in schedule:
+                # Clamp to the real last day of the month (not a fixed 28th)
+                last_day = calendar.monthrange(y, m)[1]
+                candidates.append(date(y, m, min(d, last_day)))
+
     best_days = 999
     best_date_str = ""
-    for y in (cur_dt.year, cur_dt.year + 1):
-        for m, d in schedule:
-            try:
-                ed = datetime(y, m, min(d, 28)).date()
-            except ValueError:
-                continue
-            diff = (ed - cur_dt).days
-            if -1 <= diff <= target_dte and diff < best_days:
-                best_days = diff
-                best_date_str = ed.strftime("%m-%d")
+    for ed in candidates:
+        diff = (ed - cur_dt).days
+        if 0 <= diff <= target_dte and diff < best_days:
+            best_days = diff
+            best_date_str = ed.strftime("%m-%d")
 
     if 0 <= best_days <= target_dte:
-        # Moderate institutional gap-risk discount: stronger if earnings is within 12 days
+        # Gap-risk discount: stronger if earnings is within 12 days
         penalty = 4.5 if best_days <= 12 else 2.5
+        day_txt = "今日" if best_days == 0 else f"{best_days} 天后"
         return {
             "inWindow": True,
             "daysToEarnings": best_days,
             "estDate": best_date_str,
+            "source": source,
             "penalty": penalty,
-            "warning": f"⚠️ 跨财报期预警（预计约 {best_date_str} 披露季报，距今约 {max(1, best_days)} 天）：防财报跳空已折价 -{penalty:g}分，已自动切换保守档(Δ-0.14)",
+            "warning": f"⚠️ 跨财报期预警（{source}日期 {best_date_str} 披露季报，{day_txt}）：防财报跳空已折价 -{penalty:g}分，已自动切换保守档",
         }
     return None
 
@@ -428,12 +488,19 @@ def _classify_trend_regime(
     ret_1w: float,
     ret_1m: float,
     rsi: float,
+    stab_signals: Optional[Dict[str, bool]] = None,
 ) -> Tuple[str, float, float]:
     """
     Classify multi-timeframe trend structure into institutional regimes.
     Returns (trend_regime_label, trend_score_0_to_15, bear_channel_discount).
+
+    stab_signals (right-side stabilization confirmations, need >= 2 of 3):
+      - above_ma5_2d:  last 2 closes both above their MA5
+      - higher_low:    the 20-day low was set >= 5 sessions ago and recent 5-day lows are higher
+      - rsi_recover:   RSI back >= 35 and rising vs. 3 sessions ago
     """
-    is_broad_index = inst.get("sector") in ("股指期权", "宽基/宏观ETF", "股指/利率")
+    stab_signals = stab_signals or {}
+    n_confirm = sum(1 for v in stab_signals.values() if v)
 
     # 1. Active falling knife / breakdown below Bollinger lower band
     if (ret_1w < -8.0 and chg_1d < -1.8) or (spot < boll_low * 0.995 and chg_1d < -1.5 and ret_1w < -5.5):
@@ -442,14 +509,11 @@ def _classify_trend_regime(
     # 2. Bear-Trend Alignment Check (spot < MA20 < MA60 and MA60 sloping down)
     is_bear_alignment = (spot < ma20 * 0.998) and (ma20 < ma60 * 0.995) and (ma60_slope_pct < -0.8)
     if is_bear_alignment and ret_1m < -4.0:
-        # Distinguish between (A) Right-side Oversold Stabilization vs (B) Grinding Bear Breakdown
-        bounced_from_low = spot >= low_20d * 1.018 and spot >= boll_low * 1.005
-        short_term_holding = (chg_1d >= -0.45) or (ret_1w >= -1.5) or (spot >= ma5 * 0.996)
-        if bounced_from_low and short_term_holding:
-            if is_broad_index:
-                return "超跌企稳筑底", 12.2, 0.0
-            return "空头超跌初企稳", 10.2, -1.5
-        # Pure grinding bear market hugging lows: strictly cap trend_score and apply bear channel discount!
+        # Stabilization requires at least 2 independent confirmations AND price off the 20D low.
+        # (Same rule for every asset class; no discretionary "policy support" exemption.)
+        if n_confirm >= 2 and spot >= low_20d * 1.015:
+            return "空头超跌初企稳", 9.5, -2.0
+        # Pure grinding bear market: strictly cap trend_score and apply bear channel discount!
         return "空头阴跌通道", 5.5, -6.5
 
     # 3. Healthy Pullback in Primary Uptrend (多头趋势回踩支撑: MA60 rising/flat, spot pulling back near MA20/MA60)
@@ -555,9 +619,22 @@ def analyze_single_instrument(
     cons_tier = tiers["conservative"]
     agg_tier = tiers["aggressive"]
 
+    # Right-side stabilization confirmations (used only inside bear alignment)
+    above_ma5_2d = (
+        len(closes) >= 7
+        and closes[-1] > (_sma(closes, 5) or spot)
+        and closes[-2] > (_sma(closes[:-1], 5) or closes[-2])
+    )
+    low_5d = min(b["l"] for b in bars[-5:])
+    higher_low = low_5d > low_20d * 1.005
+    rsi_3ago = _rsi14(closes[:-3], 14) if len(closes) > 20 else rsi
+    rsi_recover = rsi >= 35.0 and rsi > rsi_3ago + 2.0
+    stab_signals = {"above_ma5_2d": bool(above_ma5_2d), "higher_low": bool(higher_low), "rsi_recover": bool(rsi_recover)}
+
     # Classify Multi-Timeframe Trend Regime FIRST so Cost × Trend matrix can use it
     trend_regime, trend_score, bear_discount = _classify_trend_regime(
         inst=inst,
+        stab_signals=stab_signals,
         spot=spot,
         ma5=ma5,
         ma20=ma20,
@@ -582,7 +659,13 @@ def analyze_single_instrument(
         high_c = float(cost_cfg["comfort_high"])
         vs_prim = ((spot / prim_c) - 1.0) * 100.0
         vs_cash = ((spot / cash_c) - 1.0) * 100.0
-        if spot <= cash_c * 1.02:
+        # Stale-anchor guard: a price that sits >10% BELOW the table's cash cost means the
+        # cost data no longer reflects reality (upstream inputs fell / oversupply), not a hard floor.
+        anchor_valid = vs_cash >= -10.0
+        if not anchor_valid:
+            c_status = f"成本锚失效·现价低于表中现金成本{abs(vs_cash):.0f}%(成本数据待更新)"
+            c_tone = "neutral"
+        elif spot <= cash_c * 1.02:
             if trend_regime == "空头阴跌通道":
                 c_status = "破现金成本·过剩寻底期(防阴跌)"
                 c_tone = "gold"
@@ -611,6 +694,7 @@ def analyze_single_instrument(
             "comfortHigh": high_c,
             "vsPrimaryPct": round(vs_prim, 1),
             "vsCashPct": round(vs_cash, 1),
+            "anchorValid": anchor_valid,
             "status": c_status,
             "tone": c_tone,
             "label": cost_cfg.get("label", ""),
@@ -639,7 +723,13 @@ def analyze_single_instrument(
         )
         # Historical 3Y/5Y percentile smooth adjustment (-3.5 to +3.0 pts)
         pct_adj = _interp_linear(low_pct_blend, [(10.0, 3.0), (30.0, 1.5), (55.0, 0.0), (85.0, -2.5), (95.0, -4.0)])
-        floor_score = raw_cost_pts + pct_adj
+        if cost_info["anchorValid"]:
+            floor_score = raw_cost_pts + pct_adj
+        else:
+            # Stale cost anchor -> neutral floor (only the historical percentile still counts)
+            floor_score = 13.0 + pct_adj
+            for _t in tiers.values():
+                _t["anchorTags"] = [x for x in _t.get("anchorTags", []) if "成本" not in x]
 
         # Cost × Trend Matrix: if commodity is below/near static cost but still in a grinding bear channel,
         # discount static cost score to guard against raw-material cost deflation & oversupply traps!
@@ -749,6 +839,12 @@ def analyze_single_instrument(
     risk_notes: List[str] = []
     if bear_discount < 0:
         risk_notes.append(f"空头趋势折价({bear_discount:+.1f}分)：均线空头向下未站稳MA20，严防破成本阴跌")
+    stale_anchor = bool(cost_info and not cost_info.get("anchorValid", True))
+    if stale_anchor:
+        risk_notes.append(
+            f"⚠️ 成本锚失效：现价低于表中现金成本 {abs(cost_info['vsCashPct']):.0f}%，成本数据可能已过时，"
+            f"底部安全垫按中性计分，不再视为铁底"
+        )
 
     earnings_info = _check_earnings_risk(inst, bars[-1]["t"], target_dte)
     if earnings_info and earnings_info.get("inWindow"):
@@ -772,6 +868,7 @@ def analyze_single_instrument(
     # Choose optimal recommended tier for current market state
     if (
         (earnings_info and earnings_info.get("inWindow"))
+        or stale_anchor
         or trend_regime in ("空头阴跌通道", "破位急跌飞刀")
         or rsi >= 65
         or pct_5y >= 84
@@ -913,7 +1010,9 @@ def _classify_archetype(
     if cost_info:
         vp = cost_info["vsPrimaryPct"]
         vc = cost_info["vsCashPct"]
-        if vc <= 2.0:
+        if not cost_info.get("anchorValid", True):
+            tags.append("成本锚待更新")
+        elif vc <= 2.0:
             tags.append("破现金成本铁底")
         elif vp <= 3.0:
             tags.append("跌破完全成本")
@@ -954,10 +1053,13 @@ def _classify_archetype(
             tags.insert(0, "高股息防御底")
             return "高股息央企护盘 · 稳健防御卖Put(HO)", "gold", tags[:4]
 
-    if cost_info and cost_info["vsCashPct"] <= 3.0:
+    anchor_ok = bool(cost_info and cost_info.get("anchorValid", True))
+    if anchor_ok and cost_info["vsCashPct"] <= 3.0:
         return "破现金成本+企稳 · 深虚值铁底收租", "bull", tags[:4]
-    if cost_info and cost_info["vsPrimaryPct"] <= 8.0:
+    if anchor_ok and cost_info["vsPrimaryPct"] <= 8.0:
         return "贴近产业成本+筑底 · 底部企稳卖Put", "bull", tags[:4]
+    if cost_info and not anchor_ok:
+        return "成本锚失效 · 仅按技术面保守档参考", "neutral", tags[:4]
     if mkt == "us_stk" and dd_52w <= -7.0 and rsi <= 48.0:
         return "核心龙头回调企稳 · 以接货之心卖Put", "bull", tags[:4]
     if iv_rank >= 62.0 and vrp_pts >= 3.0 and rsi <= 55.0:
@@ -994,7 +1096,7 @@ def _build_weekly_playbook(
     headline = (
         f"【{archetype}】推荐卖出 {target_dte}天到期、行权价 {cur}{rec['strike']:g} Put（{rec['label']}，"
         f"Delta {rec['delta']:.2f}），安全垫 {rec['otmPct']:.1f}%（合 {rec['atrBufferMultiple']:.1f} 倍日均ATR），"
-        f"肥尾校准胜率 {rec['popPct']:.1f}%。"
+        f"经验肥尾折扣后胜率 {rec['popPct']:.1f}%。"
     )
 
     if cost_info:
@@ -1002,12 +1104,12 @@ def _build_weekly_playbook(
             f"{inst['name']}现价 {spot:g} {unit}（趋势状态：【{trend_regime}】，近5年分位 {pct_5y:.1f}%，RSI {rsi:.1f}）。"
             f"产业锚方面，{cost_info['label']}约 {cost_info['primaryCost']:g} {unit}，现金成本约 {cost_info['cashCost']:g} {unit}，"
             f"现价相对完全成本 {cost_info['vsPrimaryPct']:+.1f}%（{cost_info['status']}）。"
-            f"期权盘口评级为【{liq_label}】，真实波动率溢价 VRP {vrp_pts:+.1f}个百分点。{inst.get('moat_note', '')}"
+            f"期权盘口评级为【{liq_label}】，模型估算波动率溢价 VRP {vrp_pts:+.1f}个百分点（非实盘IV）。{inst.get('moat_note', '')}"
         )
     else:
         why_now = (
             f"{inst['name']}现价 {cur}{spot:g}（趋势状态：【{trend_regime}】，RSI {rsi:.1f}，"
-            f"20日历史波动率 {hv20*100:.1f}%，IV分位 {iv_rank:.0f}%，波动率溢价 VRP {vrp_pts:+.1f}%）。"
+            f"20日历史波动率 {hv20*100:.1f}%，估算IV分位 {iv_rank:.0f}%，估算VRP {vrp_pts:+.1f}%）。"
             f"技术面60日均线位于 {cur}{supports['ma60']:g}，布林下轨位于 {cur}{supports['bollLow']:g}，"
             f"期权流动性评级为【{liq_label}】。{inst.get('moat_note', '')}"
         )
@@ -1093,7 +1195,9 @@ def get_weekly_recommendations(
         # Summary KPIs
         avg_score = round(sum(r["putScore"] for r in all_rows) / max(len(all_rows), 1), 1)
         below_cost_count = sum(
-            1 for r in all_rows if r.get("cost") and r["cost"]["vsPrimaryPct"] <= 3.0
+            1
+            for r in all_rows
+            if r.get("cost") and r["cost"].get("anchorValid", True) and r["cost"]["vsPrimaryPct"] <= 3.0
         )
         high_ivr_count = sum(1 for r in all_rows if r["ivRank"] >= 60.0)
 
