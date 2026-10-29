@@ -28,6 +28,7 @@ from data_engine import (
     ensure_all_bars_loaded,
     get_instrument_bars,
     get_macro_vol_regime,
+    get_real_iv_map,
 )
 from http_utils import cached, get_week_context, load_pickle, now_bj, save_pickle
 from options_math import build_payoff_curve, build_put_tiers
@@ -395,13 +396,14 @@ def _calibrate_implied_vol(
     rsi14: float,
     ret_1w: float,
     macro_regime: Dict[str, Any],
-) -> Tuple[float, float, float]:
+    real_iv_entry: Optional[Dict[str, Any]] = None,
+    earnings_in_window: bool = False,
+) -> Tuple[float, float, float, str, bool]:
     """
-    De-circularized ATM Implied Volatility (IV), IV Rank, and VRP (IV - HV20) calibration:
-    - Anchors structural IV to 1-year median HV, 60-day HV, and macro implied volatility indices (VIX/VXN/OVX/GVZ)
-      rather than simply multiplying HV20 by a fixed constant.
-    - When short-term realized vol (HV20) explodes far above structural vol without VIX support,
-      VRP (IV - HV20) compresses or turns negative, accurately warning option sellers of realized vol risk.
+    Hybrid Real-Market + De-circularized ATM Implied Volatility (IV), IV Rank, and VRP (IV - HV20):
+    - Primary: Uses real option-chain / CBOE / CFFEX ATM IV when available (`is_real_iv = True`).
+    - Fallback: Anchors structural IV to 1-year median HV, 60-day HV, and macro implied vol indices
+      (`is_real_iv = False`, explicitly labeled `"⚪ 估算IV"` so synthetic VRP never inflates scores).
     """
     structural_hv = 0.40 * hv20 + 0.35 * hv60 + 0.25 * hv_med_1y
     mkt = inst["market"]
@@ -412,65 +414,83 @@ def _calibrate_implied_vol(
     ovx = float(macro_regime.get("ovx") or 34.0) / 100.0
     gvz = float(macro_regime.get("gvz") or 17.5) / 100.0
 
-    vrp_mult = 1.14
-    regime_anchor = structural_hv
+    real_ok = bool(real_iv_entry and 0.04 < float(real_iv_entry.get("atmIv", 0.0)) < 1.80)
+    stale_quote = False
+    if real_ok and "期权链" in str(real_iv_entry.get("ivSource", "")):
+        # Sanity guard for single-name chain quotes (off-hours stale mids / wide spreads):
+        # reject if IV > 1.6x realized vol (2.2x when an earnings event sits inside the window).
+        rv_ref = max(hv20, hv60, 0.10)
+        ratio_cap = 2.2 if earnings_in_window else 1.6
+        if float(real_iv_entry["atmIv"]) > rv_ref * ratio_cap:
+            real_ok = False
+            stale_quote = True
 
-    if mkt == "us_stk":
-        if inst["symbol"] == "SPY":
-            regime_anchor = vix
-            vrp_mult = 1.06
-        elif inst["symbol"] == "QQQ":
-            regime_anchor = vxn
-            vrp_mult = 1.06
-        elif sector in ("AI/半导体", "科技巨头"):
-            regime_anchor = 0.55 * structural_hv + 0.45 * (vxn * 1.22)
-            vrp_mult = 1.15
-        else:
-            regime_anchor = 0.60 * structural_hv + 0.40 * (vix * 1.10)
-            vrp_mult = 1.13
-    elif mkt == "us_fut":
-        if sector == "能源":
-            regime_anchor = 0.50 * structural_hv + 0.50 * ovx
-            vrp_mult = 1.14
-        elif sector == "贵金属":
-            regime_anchor = 0.55 * structural_hv + 0.45 * gvz
-            vrp_mult = 1.12
-        elif inst["symbol"] == "ES=F":
-            regime_anchor = vix
-            vrp_mult = 1.05
-        elif inst["symbol"] == "NQ=F":
-            regime_anchor = vxn
-            vrp_mult = 1.05
-        else:
-            regime_anchor = structural_hv
-            vrp_mult = 1.13
-    else:  # cn_fut
-        if sector == "股指期权":
-            regime_anchor = 0.70 * structural_hv + 0.30 * max(vix, 0.20)
-            vrp_mult = 1.16
-        else:
-            regime_anchor = structural_hv
-            vrp_mult = 1.13
+    if real_ok:
+        atm_iv = float(real_iv_entry["atmIv"])
+        iv_source = str(real_iv_entry.get("ivSource") or "🟢 实盘IV")
+        is_real_iv = True
+    else:
+        vrp_mult = 1.14
+        regime_anchor = structural_hv
 
-    # Moderate fear skew expansion on pullbacks, capped to avoid synthetic runaway
-    fear_bump = 0.0
-    if -8.5 <= ret_1w < -2.0:
-        fear_bump += min(0.045, abs(ret_1w) * 0.006)
-    elif ret_1w < -8.5:
-        fear_bump += 0.050
-    if 28.0 <= rsi14 < 42.0:
-        fear_bump += (42.0 - rsi14) * 0.0012
+        if mkt == "us_stk":
+            if inst["symbol"] == "SPY":
+                regime_anchor = vix
+                vrp_mult = 1.06
+            elif inst["symbol"] == "QQQ":
+                regime_anchor = vxn
+                vrp_mult = 1.06
+            elif sector in ("AI/半导体", "科技巨头"):
+                regime_anchor = 0.55 * structural_hv + 0.45 * (vxn * 1.22)
+                vrp_mult = 1.15
+            else:
+                regime_anchor = 0.60 * structural_hv + 0.40 * (vix * 1.10)
+                vrp_mult = 1.13
+        elif mkt == "us_fut":
+            if sector == "能源":
+                regime_anchor = 0.50 * structural_hv + 0.50 * ovx
+                vrp_mult = 1.14
+            elif sector == "贵金属":
+                regime_anchor = 0.55 * structural_hv + 0.45 * gvz
+                vrp_mult = 1.12
+            elif inst["symbol"] == "ES=F":
+                regime_anchor = vix
+                vrp_mult = 1.05
+            elif inst["symbol"] == "NQ=F":
+                regime_anchor = vxn
+                vrp_mult = 1.05
+            else:
+                regime_anchor = structural_hv
+                vrp_mult = 1.13
+        else:  # cn_fut
+            if sector == "股指期权":
+                regime_anchor = 0.70 * structural_hv + 0.30 * max(vix, 0.20)
+                vrp_mult = 1.16
+            else:
+                regime_anchor = structural_hv
+                vrp_mult = 1.13
 
-    atm_iv = (0.55 * structural_hv + 0.45 * regime_anchor) * vrp_mult + fear_bump
-    atm_iv = max(0.08, min(atm_iv, 1.45))
+        # Moderate fear skew expansion on pullbacks, capped to avoid synthetic runaway
+        fear_bump = 0.0
+        if -8.5 <= ret_1w < -2.0:
+            fear_bump += min(0.045, abs(ret_1w) * 0.006)
+        elif ret_1w < -8.5:
+            fear_bump += 0.050
+        if 28.0 <= rsi14 < 42.0:
+            fear_bump += (42.0 - rsi14) * 0.0012
 
-    # True Variance Risk Premium: ATM IV minus 20-day realized volatility
+        atm_iv = (0.55 * structural_hv + 0.45 * regime_anchor) * vrp_mult + fear_bump
+        atm_iv = max(0.08, min(atm_iv, 1.45))
+        iv_source = "⚪ 估算IV(期权链报价异常已剔除)" if stale_quote else "⚪ 估算IV"
+        is_real_iv = False
+
+    # Variance Risk Premium: ATM IV minus 20-day realized volatility
     vrp_pts = (atm_iv - hv20) * 100.0
 
     # IV Rank blends HV rank with current IV/HV_median ratio
     iv_vs_med = (atm_iv / max(hv_med_1y, 0.08)) - 1.0
     iv_rank = min(99.0, max(5.0, hv_rank * 0.72 + 22.0 + iv_vs_med * 35.0))
-    return atm_iv, round(iv_rank, 1), round(vrp_pts, 1)
+    return atm_iv, round(iv_rank, 1), round(vrp_pts, 1), iv_source, is_real_iv
 
 
 def _classify_trend_regime(
@@ -542,6 +562,7 @@ def analyze_single_instrument(
     bars: List[Dict[str, Any]],
     macro_regime: Dict[str, Any],
     target_dte: int = 30,
+    real_iv_entry: Optional[Dict[str, Any]] = None,
 ) -> Optional[Dict[str, Any]]:
     if not bars or len(bars) < 35:
         return None
@@ -595,8 +616,11 @@ def analyze_single_instrument(
     hv20 = _realized_vol(closes, 20)
     hv60 = _realized_vol(closes, 60)
     hv_rank, hv_med_1y = _hv_stats_1y(closes, hv20)
-    atm_iv, iv_rank, vrp_pts = _calibrate_implied_vol(
-        inst, hv20, hv60, hv_med_1y, hv_rank, rsi, ret_1w, macro_regime
+    earnings_info = _check_earnings_risk(inst, bars[-1]["t"], target_dte)
+    atm_iv, iv_rank, vrp_pts, iv_source, is_real_iv = _calibrate_implied_vol(
+        inst, hv20, hv60, hv_med_1y, hv_rank, rsi, ret_1w, macro_regime,
+        real_iv_entry=real_iv_entry,
+        earnings_in_window=bool(earnings_info and earnings_info.get("inWindow")),
     )
 
     supports = {
@@ -613,7 +637,14 @@ def analyze_single_instrument(
     }
 
     tiers = build_put_tiers(
-        inst, spot, atm_iv, dte=target_dte, supports=supports, atr_pct=atr_pct, hv20=hv20
+        inst,
+        spot,
+        atm_iv,
+        dte=target_dte,
+        supports=supports,
+        atr_pct=atr_pct,
+        hv20=hv20,
+        closes=closes,
     )
     bal_tier = tiers["balanced"]
     cons_tier = tiers["conservative"]
@@ -771,11 +802,12 @@ def analyze_single_instrument(
         floor_score = max(7.0, min(30.0, q_bonus + dd_pts + ma_pts + val_adj))
 
     # 2. Volatility Risk Premium & Risk-Adjusted Carry (0 - 25 pts)
-    #    - 10 pts: IV Rank (0-6.5) + True VRP = IV - HV20 (0-3.5)
+    #    - 10 pts: IV Rank (0-6.5) + True VRP = IV - HV20 (0-3.5; capped at neutral 1.8 if estimated IV)
     #    - 9 pts:  Risk-Adjusted Return-to-Vol Ratio + Capped Yield
     #    - 6 pts:  ATR Safety Cushion Multiple (Breakeven Buffer / Daily ATR14)
     ivr_pts = _interp_linear(iv_rank, [(10.0, 2.5), (35.0, 4.2), (60.0, 5.6), (85.0, 6.5)])
-    vrp_score_pts = _interp_linear(vrp_pts, [(-3.0, 0.5), (0.0, 1.5), (3.5, 2.8), (7.0, 3.5)])
+    raw_vrp_score = _interp_linear(vrp_pts, [(-3.0, 0.5), (0.0, 1.5), (3.5, 2.8), (7.0, 3.5)])
+    vrp_score_pts = raw_vrp_score if is_real_iv else min(1.8, raw_vrp_score)
 
     ret_to_vol = bal_tier["returnToVolRatio"]
     ann_ret = bal_tier["annReturnMarginPct"] if inst["market"] != "us_stk" else bal_tier["annReturnCashPct"]
@@ -846,7 +878,6 @@ def analyze_single_instrument(
             f"底部安全垫按中性计分，不再视为铁底"
         )
 
-    earnings_info = _check_earnings_risk(inst, bars[-1]["t"], target_dte)
     if earnings_info and earnings_info.get("inWindow"):
         raw_total -= float(earnings_info["penalty"])
         risk_notes.append(earnings_info["warning"])
@@ -913,6 +944,8 @@ def analyze_single_instrument(
         iv_rank=iv_rank,
         vrp_pts=vrp_pts,
         hv20=hv20,
+        iv_source=iv_source,
+        is_real_iv=is_real_iv,
         trend_regime=trend_regime,
         liq_label=liq_label,
         risk_notes=risk_notes,
@@ -954,12 +987,15 @@ def analyze_single_instrument(
         "hv20Pct": round(hv20 * 100.0, 1),
         "hv60Pct": round(hv60 * 100.0, 1),
         "atmIvPct": round(atm_iv * 100.0, 1),
+        "ivSource": iv_source,
+        "isRealIv": is_real_iv,
         "ivRank": iv_rank,
         "vrpPts": vrp_pts,
         "trendRegime": trend_regime,
         "liquidityLabel": liq_label,
         "earningsInfo": earnings_info,
         "riskNotes": risk_notes,
+        "highCorrPeers": [],
         "supports": supports,
         "cost": cost_info,
         "moatNote": inst.get("moat_note", ""),
@@ -1077,6 +1113,8 @@ def _build_weekly_playbook(
     iv_rank: float,
     vrp_pts: float,
     hv20: float,
+    iv_source: str,
+    is_real_iv: bool,
     trend_regime: str,
     liq_label: str,
     risk_notes: List[str],
@@ -1093,10 +1131,18 @@ def _build_weekly_playbook(
     cur = inst["currency"]
     unit = inst["unit"]
 
+    bsm_pop = rec.get("bsmPopPct", rec["popPct"])
+    emp_pop = rec.get("empiricalPopPct", rec["popPct"])
     headline = (
         f"【{archetype}】推荐卖出 {target_dte}天到期、行权价 {cur}{rec['strike']:g} Put（{rec['label']}，"
         f"Delta {rec['delta']:.2f}），安全垫 {rec['otmPct']:.1f}%（合 {rec['atrBufferMultiple']:.1f} 倍日均ATR），"
-        f"经验肥尾折扣后胜率 {rec['popPct']:.1f}%。"
+        f"双轨取低胜率 {rec['popPct']:.1f}%（BSM肥尾 {bsm_pop:.1f}% / 5年历史实证 {emp_pop:.1f}%）。"
+    )
+
+    iv_note = (
+        f"{iv_source}，实盘VRP {vrp_pts:+.1f}个百分点"
+        if is_real_iv
+        else f"{iv_source}，模型推算VRP {vrp_pts:+.1f}个百分点（已锁定中性VRP得分防虚高）"
     )
 
     if cost_info:
@@ -1104,12 +1150,12 @@ def _build_weekly_playbook(
             f"{inst['name']}现价 {spot:g} {unit}（趋势状态：【{trend_regime}】，近5年分位 {pct_5y:.1f}%，RSI {rsi:.1f}）。"
             f"产业锚方面，{cost_info['label']}约 {cost_info['primaryCost']:g} {unit}，现金成本约 {cost_info['cashCost']:g} {unit}，"
             f"现价相对完全成本 {cost_info['vsPrimaryPct']:+.1f}%（{cost_info['status']}）。"
-            f"期权盘口评级为【{liq_label}】，模型估算波动率溢价 VRP {vrp_pts:+.1f}个百分点（非实盘IV）。{inst.get('moat_note', '')}"
+            f"期权盘口评级为【{liq_label}】（{iv_note}）。{inst.get('moat_note', '')}"
         )
     else:
         why_now = (
             f"{inst['name']}现价 {cur}{spot:g}（趋势状态：【{trend_regime}】，RSI {rsi:.1f}，"
-            f"20日历史波动率 {hv20*100:.1f}%，估算IV分位 {iv_rank:.0f}%，估算VRP {vrp_pts:+.1f}%）。"
+            f"20日历史波动率 {hv20*100:.1f}%，IV分位 {iv_rank:.0f}%，{iv_note}）。"
             f"技术面60日均线位于 {cur}{supports['ma60']:g}，布林下轨位于 {cur}{supports['bollLow']:g}，"
             f"期权流动性评级为【{liq_label}】。{inst.get('moat_note', '')}"
         )
@@ -1151,6 +1197,70 @@ def _build_weekly_playbook(
     }
 
 
+def _compute_60d_corr_map(
+    bars_map: Dict[str, List[Dict[str, Any]]],
+    window: int = 60,
+) -> Dict[Tuple[str, str], float]:
+    """
+    Compute pairwise 60-day daily log-return Pearson correlation across instruments.
+    Aligns by date `b['t']` when >= 25 overlapping dates exist, falling back to tail alignment.
+    """
+    ret_by_date: Dict[str, Dict[str, float]] = {}
+    ret_series: Dict[str, List[float]] = {}
+
+    for inst_id, bars in bars_map.items():
+        if not bars or len(bars) < 25:
+            continue
+        sub = bars[-(window + 5) :]
+        dmap: Dict[str, float] = {}
+        rlist: List[float] = []
+        for i in range(1, len(sub)):
+            c0 = float(sub[i - 1]["c"])
+            c1 = float(sub[i]["c"])
+            if c0 > 0 and c1 > 0:
+                r = math.log(c1 / c0)
+                dmap[sub[i]["t"]] = r
+                rlist.append(r)
+        if len(rlist) >= 20:
+            ret_by_date[inst_id] = dmap
+            ret_series[inst_id] = rlist[-window:]
+
+    ids = list(ret_series.keys())
+    corr_map: Dict[Tuple[str, str], float] = {}
+
+    for i in range(len(ids)):
+        id_a = ids[i]
+        map_a = ret_by_date[id_a]
+        for j in range(i + 1, len(ids)):
+            id_b = ids[j]
+            map_b = ret_by_date[id_b]
+            common_dates = [d for d in map_a if d in map_b]
+            if len(common_dates) >= 25:
+                xs = [map_a[d] for d in common_dates[-window:]]
+                ys = [map_b[d] for d in common_dates[-window:]]
+            else:
+                ra = ret_series[id_a]
+                rb = ret_series[id_b]
+                m = min(len(ra), len(rb), window)
+                if m < 20:
+                    continue
+                xs = ra[-m:]
+                ys = rb[-m:]
+
+            n = len(xs)
+            mx = sum(xs) / n
+            my = sum(ys) / n
+            cov = sum((x - mx) * (y - my) for x, y in zip(xs, ys))
+            vx = sum((x - mx) ** 2 for x in xs)
+            vy = sum((y - my) ** 2 for y in ys)
+            if vx > 1e-12 and vy > 1e-12:
+                rho = round(cov / math.sqrt(vx * vy), 2)
+                corr_map[(id_a, id_b)] = rho
+                corr_map[(id_b, id_a)] = rho
+
+    return corr_map
+
+
 def get_weekly_recommendations(
     target_dte: int = 30,
     force: bool = False,
@@ -1164,26 +1274,47 @@ def get_weekly_recommendations(
         week_ctx = get_week_context(target_dte=target_dte)
         macro_regime = get_macro_vol_regime(force=force)
         bars_map = ensure_all_bars_loaded(force=force)
+        real_iv_map = get_real_iv_map(target_dte=week_ctx["targetDte"], macro_regime=macro_regime, force=force)
+        corr_map = _compute_60d_corr_map(bars_map, window=60)
 
         all_rows: List[Dict[str, Any]] = []
         for inst in ALL_INSTRUMENTS:
             b = bars_map.get(inst["id"])
             if not b:
                 continue
-            row = analyze_single_instrument(inst, b, macro_regime, target_dte=week_ctx["targetDte"])
+            row = analyze_single_instrument(
+                inst,
+                b,
+                macro_regime,
+                target_dte=week_ctx["targetDte"],
+                real_iv_entry=real_iv_map.get(inst["id"]),
+            )
             if row:
                 all_rows.append(row)
 
         all_rows.sort(key=lambda x: x["putScore"], reverse=True)
 
+        # Populate highCorrPeers (same-market peers with 60D correlation >= 0.70)
+        by_id = {r["id"]: r for r in all_rows}
+        for r in all_rows:
+            peers: List[Dict[str, Any]] = []
+            for other_id, other_row in by_id.items():
+                if other_id == r["id"] or other_row["market"] != r["market"]:
+                    continue
+                rho = corr_map.get((r["id"], other_id), 0.0)
+                if rho >= 0.70:
+                    peers.append({"symbol": other_row["symbol"], "name": other_row["name"], "corr": rho})
+            peers.sort(key=lambda x: x["corr"], reverse=True)
+            r["highCorrPeers"] = peers[:3]
+
         us_stk_list = [r for r in all_rows if r["market"] == "us_stk"]
         us_fut_list = [r for r in all_rows if r["market"] == "us_fut"]
         cn_fut_list = [r for r in all_rows if r["market"] == "cn_fut"]
 
-        # Weekly Top Picks per market (diversified across sectors, excluding circuit-breaker capped items)
-        top_us_stk = _select_diversified_top(us_stk_list, top_n=6, max_per_sector=2)
-        top_us_fut = _select_diversified_top(us_fut_list, top_n=6, max_per_sector=2)
-        top_cn_fut = _select_diversified_top(cn_fut_list, top_n=6, max_per_sector=2)
+        # Weekly Top Picks per market (diversified across sectors AND deduplicated by 60D return correlation <= 0.70)
+        top_us_stk = _select_diversified_top(us_stk_list, top_n=6, max_per_sector=2, corr_map=corr_map, max_corr=0.70)
+        top_us_fut = _select_diversified_top(us_fut_list, top_n=6, max_per_sector=2, corr_map=corr_map, max_corr=0.70)
+        top_cn_fut = _select_diversified_top(cn_fut_list, top_n=6, max_per_sector=2, corr_map=corr_map, max_corr=0.70)
 
         # Dedicated A-share Index Options trio (IM0, IF0, IH0) ordered specifically
         idx_order = {"CN_FUT:IM0": 0, "CN_FUT:IF0": 1, "CN_FUT:IH0": 2}
@@ -1200,6 +1331,7 @@ def get_weekly_recommendations(
             if r.get("cost") and r["cost"].get("anchorValid", True) and r["cost"]["vsPrimaryPct"] <= 3.0
         )
         high_ivr_count = sum(1 for r in all_rows if r["ivRank"] >= 60.0)
+        real_iv_count = sum(1 for r in all_rows if r.get("isRealIv"))
 
         return {
             "weekContext": week_ctx,
@@ -1212,6 +1344,7 @@ def get_weekly_recommendations(
                 "avgScore": avg_score,
                 "belowCostCount": below_cost_count,
                 "highIvrCount": high_ivr_count,
+                "realIvCount": real_iv_count,
             },
             "cnIndexOptions": cn_index_options,
             "topPicks": {
@@ -1232,10 +1365,16 @@ def get_weekly_recommendations(
 
 
 def _select_diversified_top(
-    sorted_rows: List[Dict[str, Any]], top_n: int = 6, max_per_sector: int = 2
+    sorted_rows: List[Dict[str, Any]],
+    top_n: int = 6,
+    max_per_sector: int = 2,
+    corr_map: Optional[Dict[Tuple[str, str], float]] = None,
+    max_corr: float = 0.70,
 ) -> List[Dict[str, Any]]:
     picked: List[Dict[str, Any]] = []
     sector_counts: Dict[str, int] = {}
+    corr_map = corr_map or {}
+
     for r in sorted_rows:
         if len(picked) >= top_n:
             break
@@ -1245,8 +1384,26 @@ def _select_diversified_top(
         sec = r.get("sector", "其他")
         if sector_counts.get(sec, 0) >= max_per_sector:
             continue
+        # Correlation clustering check: avoid stacking assets with 60D return correlation > max_corr
+        if any(corr_map.get((r["id"], p["id"]), 0.0) > max_corr for p in picked):
+            continue
         picked.append(r)
         sector_counts[sec] = sector_counts.get(sec, 0) + 1
+
+    # Second pass: relax correlation cap to 0.85 if fewer than top_n qualified
+    if len(picked) < top_n:
+        have_ids = {x["id"] for x in picked}
+        for r in sorted_rows:
+            if len(picked) >= top_n:
+                break
+            if r["id"] in have_ids:
+                continue
+            if r.get("trendRegime") in ("破位急跌飞刀", "空头阴跌通道"):
+                continue
+            if any(corr_map.get((r["id"], p["id"]), 0.0) > 0.85 for p in picked):
+                continue
+            picked.append(r)
+            have_ids.add(r["id"])
 
     if len(picked) < top_n:
         have_ids = {x["id"] for x in picked}
@@ -1276,11 +1433,18 @@ def get_instrument_detail(
     week_ctx = get_week_context(target_dte=target_dte)
     actual_dte = week_ctx["targetDte"]
     macro_regime = get_macro_vol_regime(force=False)
+    real_iv_map = get_real_iv_map(target_dte=actual_dte, macro_regime=macro_regime, force=False)
     bars = get_instrument_bars(inst["id"], force=force)
     if not bars:
         raise ValueError(f"No historical bars for {inst_id}")
 
-    analysis = analyze_single_instrument(inst, bars, macro_regime, target_dte=actual_dte)
+    analysis = analyze_single_instrument(
+        inst,
+        bars,
+        macro_regime,
+        target_dte=actual_dte,
+        real_iv_entry=real_iv_map.get(inst["id"]),
+    )
     if not analysis:
         raise ValueError(f"Insufficient data to analyze {inst_id}")
 

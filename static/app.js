@@ -211,8 +211,8 @@
               <span class="pcm-val bull-txt">${fmtNum(t.otmPct, 1)}%</span>
             </div>
             <div class="pcm-item">
-              <span class="pcm-lbl">到期胜率(PoP)</span>
-              <span class="pcm-val">${fmtNum(t.popPct, 1)}%</span>
+              <span class="pcm-lbl">到期胜率(双轨取低)</span>
+              <span class="pcm-val" title="BSM肥尾理论: ${fmtNum(t.bsmPopPct ?? t.popPct, 1)}% | 5年历史实证: ${fmtNum(t.empiricalPopPct ?? t.popPct, 1)}%">${fmtNum(t.popPct, 1)}% <small style="color:var(--text-muted);font-size:10.5px;">(实证${fmtNum(t.empiricalPopPct ?? t.popPct, 0)}%)</small></span>
             </div>
             <div class="pcm-item">
               <span class="pcm-lbl">${yieldLbl}</span>
@@ -225,6 +225,7 @@
           </div>
 
           <div class="pc-tags">
+            <span class="mini-tag" style="${r.isRealIv ? 'border-color:rgba(16,185,129,0.45);color:#34d399;' : ''}">${r.ivSource || "⚪ 估算IV"}</span>
             ${tagsHtml}
             <span class="mini-tag">${subYield}</span>
           </div>
@@ -312,8 +313,8 @@
               <span class="pcm-val bull-txt">${fmtNum(t.otmPct, 1)}% (${fmtSmart(t.breakeven)})</span>
             </div>
             <div class="pcm-item">
-              <span class="pcm-lbl">到期胜率 (PoP)</span>
-              <span class="pcm-val bull-txt">${fmtNum(t.popPct, 1)}%</span>
+              <span class="pcm-lbl">到期胜率 (双轨取低)</span>
+              <span class="pcm-val bull-txt" title="BSM肥尾: ${fmtNum(t.bsmPopPct ?? t.popPct, 1)}% | 5年历史实证: ${fmtNum(t.empiricalPopPct ?? t.popPct, 1)}%">${fmtNum(t.popPct, 1)}% <small style="color:var(--text-muted)">(实证${fmtNum(t.empiricalPopPct ?? t.popPct, 0)}%)</small></span>
             </div>
             <div class="pcm-item">
               <span class="pcm-lbl">保证金年化 / 全额年化</span>
@@ -324,7 +325,7 @@
               <span class="pcm-val">${cur}${fmtSmart(t.contractPremium)} / ${cur}${fmtSmart(t.marginReq)}</span>
             </div>
             <div class="pcm-item">
-              <span class="pcm-lbl">平值隐波 (ATM IV / IVR)</span>
+              <span class="pcm-lbl">平值隐波 (${r.ivSource || "实盘IV"})</span>
               <span class="pcm-val cyan-txt">${fmtNum(r.atmIvPct, 1)}% (分位 ${fmtNum(r.ivRank, 0)}%)</span>
             </div>
             <div class="pcm-item">
@@ -417,7 +418,7 @@
 
     el("ws-price").textContent = `${cur}${fmtSmart(a.price)} ${a.unit === "USD" ? "" : a.unit}`;
     el("ws-chg").innerHTML = `<span class="${colorCls(a.change1dPct)}">${fmtSignPct(a.change1dPct)}</span> / <span class="${colorCls(a.ret1wPct)}">${fmtSignPct(a.ret1wPct)}</span>`;
-    el("ws-iv").textContent = `${fmtNum(a.atmIvPct, 1)}% (IVR ${fmtNum(a.ivRank, 0)}%)`;
+    el("ws-iv").textContent = `${fmtNum(a.atmIvPct, 1)}% (${a.ivSource || "估算IV"} · IVR ${fmtNum(a.ivRank, 0)}%)`;
     el("ws-rsi-pct").textContent = `RSI ${fmtNum(a.rsi14, 1)} · 5Y分位 ${fmtNum(a.pct5y, 0)}%`;
     el("ws-score").textContent = `${fmtNum(a.putScore, 1)} / 100`;
   }
@@ -448,7 +449,7 @@
             <div class="tc-row"><span>单手权利金</span><strong class="gold-txt">${cur}${fmtSmart(t.contractPremium)} (${cur}${fmtSmart(t.premium)}/单)</strong></div>
             <div class="tc-row"><span>盈亏平衡点(缓冲)</span><strong class="cyan-txt">${cur}${fmtSmart(t.breakeven)} (-${fmtNum(t.breakevenBufferPct, 1)}%)</strong></div>
             <div class="tc-row"><span>ATR安全垫倍数</span><strong class="bull-txt">${fmtNum(t.atrBufferMultiple, 1)} 倍日均ATR</strong></div>
-            <div class="tc-row"><span>经验肥尾折扣胜率(PoP)</span><strong class="bull-txt">${fmtNum(t.popPct, 1)}%</strong></div>
+            <div class="tc-row"><span>双轨胜率(BSM/5Y实证取低)</span><strong class="bull-txt">${fmtNum(t.popPct, 1)}% <small style="color:var(--text-muted)">(${fmtNum(t.bsmPopPct ?? t.popPct, 0)}%/${fmtNum(t.empiricalPopPct ?? t.popPct, 0)}%)</small></strong></div>
             <div class="tc-row"><span>单手保证金占用</span><strong>${cur}${fmtSmart(t.marginReq)}</strong></div>
             <div class="tc-row"><span>保证金口径年化</span><strong class="gold-txt">${fmtNum(t.annReturnMarginPct, 1)}%</strong></div>
             <div class="tc-row"><span>全额担保年化 / 收益波动比</span><strong>${fmtNum(t.annReturnCashPct, 1)}% (${fmtNum(t.returnToVolRatio, 2)})</strong></div>
@@ -470,13 +471,21 @@
   function renderFactorsAndLadder(detail) {
     const a = detail.analysis;
     const sb = a.scoreBreakdown || {};
+    const volLabel = a.isRealIv
+      ? `实盘VRP溢价与ATR风险调整收益 (${a.ivSource})`
+      : `波动率与ATR风险调整收益 (${a.ivSource || "⚪ 估算IV"} · VRP锁定中性)`;
     const factors = [
       { label: "底部安全垫与估值锚 (成本×趋势矩阵)", val: sb.floor || 0, max: 30 },
-      { label: "估算VRP溢价与ATR风险调整收益 (IV为模型估算)", val: sb.vol || 0, max: 25 },
+      { label: volLabel, val: sb.vol || 0, max: 25 },
       { label: "技术支撑与右侧企稳确认 (防下轨开口)", val: sb.tech || 0, max: 20 },
       { label: `多周期趋势结构 (${a.trendRegime || "均线共振"})`, val: sb.trend || 0, max: 15 },
       { label: `期权盘口深度 (${a.liquidityLabel || "主力活跃"})`, val: sb.moat || 0, max: 10 },
     ];
+
+    const corrBanner =
+      a.highCorrPeers && a.highCorrPeers.length
+        ? `<div style="margin-top:6px;padding:6px 10px;border-radius:6px;background:rgba(56,189,248,0.10);border:1px solid rgba(56,189,248,0.30);color:#7dd3fc;font-size:11.5px;line-height:1.45;">🔗 <strong>60日高相关同向簇(ρ≥0.70，Top6已做去重)：</strong>${a.highCorrPeers.map((p) => `${p.name}(${p.symbol} ρ=${p.corr.toFixed(2)})`).join("、")}</div>`
+        : "";
 
     const riskBanner =
       a.riskNotes && a.riskNotes.length
@@ -499,7 +508,7 @@
         </div>
       `;
         })
-        .join("") + riskBanner;
+        .join("") + corrBanner + riskBanner;
 
     // Price Ladder comparing Spot, Supports, Costs, and Strike
     const sup = a.supports || {};
@@ -1043,12 +1052,12 @@
           <td class="num ${r.rsi14 <= 42 ? "bull-txt" : r.rsi14 >= 68 ? "bear-txt" : ""}">${fmtNum(r.rsi14, 1)}</td>
           <td class="num">${fmtNum(r.pct5y, 0)}%</td>
           <td class="num">${costCell}</td>
-          <td class="num">${fmtNum(r.atmIvPct, 1)}% <small style="color:var(--text-muted)">(${fmtNum(r.ivRank, 0)}%)</small></td>
+          <td class="num" title="${r.ivSource || "⚪ 估算IV"}">${r.isRealIv ? "🟢" : "⚪"}${fmtNum(r.atmIvPct, 1)}% <small style="color:var(--text-muted)">(${fmtNum(r.ivRank, 0)}%)</small></td>
           <td class="num gold-txt"><strong>${cur}${fmtSmart(t.strike)}</strong> <small>(${t.label.slice(0, 2)})</small></td>
           <td class="num bull-txt"><strong>${fmtNum(t.otmPct, 1)}%</strong></td>
           <td class="num">${cur}${fmtSmart(t.breakeven)} <small class="cyan-txt">(-${fmtNum(t.breakevenBufferPct, 1)}%)</small></td>
           <td class="num">${cur}${fmtSmart(t.contractPremium)}</td>
-          <td class="num bull-txt"><strong>${fmtNum(t.popPct, 1)}%</strong></td>
+          <td class="num bull-txt" title="BSM肥尾理论: ${fmtNum(t.bsmPopPct ?? t.popPct, 1)}% | 5年历史实证: ${fmtNum(t.empiricalPopPct ?? t.popPct, 1)}%"><strong>${fmtNum(t.popPct, 1)}%</strong> <small style="color:var(--text-muted)">(${fmtNum(t.empiricalPopPct ?? t.popPct, 0)}%)</small></td>
           <td class="num gold-txt"><strong>${fmtNum(t.annReturnMarginPct, 1)}%</strong></td>
           <td class="num"><strong>${fmtNum(t.annReturnCashPct, 1)}%</strong></td>
         </tr>

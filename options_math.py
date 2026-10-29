@@ -204,6 +204,61 @@ def solve_strike_for_delta(
     return min(raw_k, spot * 0.99)
 
 
+def compute_empirical_put_stats(
+    closes: Optional[List[float]],
+    spot: float,
+    strike: float,
+    breakeven: float,
+    dte: int,
+    fallback_pop: float = 80.0,
+    fallback_otm: float = 75.0,
+) -> Dict[str, float]:
+    """
+    Compute 5-year historical rolling window empirical probability of profit (S_T >= breakeven)
+    and probability of expiring unassigned (S_T >= strike) over N_td trading days.
+    """
+    n_td = max(4, round(int(dte) * 252.0 / 365.0))
+    if not closes or len(closes) < n_td + 30 or spot <= 0:
+        return {
+            "empiricalPopPct": round(fallback_pop, 1),
+            "empiricalOtmPct": round(fallback_otm, 1),
+        }
+
+    req_be_ratio = breakeven / spot
+    req_k_ratio = strike / spot
+    total_w = 0
+    win_be = 0
+    win_otm = 0
+
+    # Step by 2 trading days across up to 5 years (~1260 bars) for fast, unbiased rolling distribution
+    limit = len(closes) - n_td
+    for i in range(0, limit, 2):
+        c0 = closes[i]
+        c1 = closes[i + n_td]
+        if c0 <= 0 or c1 <= 0:
+            continue
+        ratio = c1 / c0
+        # Filter extreme continuous futures roll splice (>45% jump)
+        if ratio > 1.65 or ratio < 0.45:
+            continue
+        total_w += 1
+        if ratio >= req_be_ratio:
+            win_be += 1
+        if ratio >= req_k_ratio:
+            win_otm += 1
+
+    if total_w < 20:
+        return {
+            "empiricalPopPct": round(fallback_pop, 1),
+            "empiricalOtmPct": round(fallback_otm, 1),
+        }
+
+    return {
+        "empiricalPopPct": round((win_be / total_w) * 100.0, 1),
+        "empiricalOtmPct": round((win_otm / total_w) * 100.0, 1),
+    }
+
+
 def build_put_tiers(
     inst: Dict[str, Any],
     spot: float,
@@ -212,6 +267,7 @@ def build_put_tiers(
     supports: Optional[Dict[str, Optional[float]]] = None,
     atr_pct: float = 1.8,
     hv20: float = 0.22,
+    closes: Optional[List[float]] = None,
 ) -> Dict[str, Dict[str, Any]]:
     """
     Generate 3 actionable Short Put strike tiers:
@@ -330,6 +386,23 @@ def build_put_tiers(
         if atr_buffer_mult >= 5.5:
             anchor_tags.append(f"{atr_buffer_mult:.1f}倍ATR安全垫")
 
+        bsm_pop = round(res["pop_pct"], 1)
+        bsm_otm = round(res["prob_otm_pct"], 1)
+        emp = compute_empirical_put_stats(
+            closes=closes,
+            spot=spot,
+            strike=k,
+            breakeven=be,
+            dte=dte,
+            fallback_pop=bsm_pop,
+            fallback_otm=bsm_otm,
+        )
+        emp_pop = emp["empiricalPopPct"]
+        emp_otm = emp["empiricalOtmPct"]
+        # Dual-track conservative envelope: min(BSM, 5Y Empirical) prevents both Gaussian thin-tail optimism
+        # and 5-year bull-market survivorship bias!
+        effective_pop = round(min(bsm_pop, emp_pop), 1)
+
         out[key] = {
             "tier": key,
             "label": label,
@@ -349,8 +422,10 @@ def build_put_tiers(
             "thetaDaily": round(res["theta_daily"], max(dp, 3)),
             "contractThetaDaily": round(contract_theta, 1),
             "vega": round(res["vega"], 3),
-            "popPct": round(res["pop_pct"], 1),
-            "probOtmPct": round(res["prob_otm_pct"], 1),
+            "popPct": effective_pop,
+            "bsmPopPct": bsm_pop,
+            "empiricalPopPct": emp_pop,
+            "probOtmPct": round(min(bsm_otm, emp_otm), 1),
             "probTouchPct": round(res["prob_touch_pct"], 1),
             "marginReq": round(margin_req, 0),
             "cashSecuredReq": round(strike_notional, 0),

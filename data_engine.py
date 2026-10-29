@@ -449,26 +449,35 @@ def get_macro_vol_regime(force: bool = False) -> Dict[str, Any]:
     return cached("macro_vol_regime", 120.0, _load, force=force)
 
 
-def _solve_cffex_put_iv(spot: float, strike: float, dte: int, put_price: float, r: float = 0.02) -> float:
-    """Bisection solver for CFFEX Put implied volatility (in %) from market mid/last price."""
+def _solve_cffex_put_iv(
+    spot: float,
+    strike: float,
+    dte: int,
+    put_price: float,
+    r: float = 0.02,
+    is_futures: bool = True,
+) -> float:
+    """Bisection solver for Put implied volatility (in %) from market mid/last price (BSM or Black-76)."""
     if spot <= 0 or strike <= 0 or put_price <= 0:
         return 20.0
     T = max(int(dte), 1) / 365.0
     sqrt_T = math.sqrt(T)
+    b = 0.0 if is_futures else r
     df_r = math.exp(-r * T)
-    intrinsic = max(0.0, (strike - spot) * df_r)
-    if put_price <= intrinsic + 0.05:
+    df_b = math.exp((b - r) * T)
+    intrinsic = max(0.0, strike * df_r - spot * df_b)
+    if put_price <= intrinsic + spot * 0.0005:
         return 8.0
 
-    lo, hi = 0.04, 1.50
+    lo, hi = 0.04, 1.80
     for _ in range(28):
         mid_iv = 0.5 * (lo + hi)
         vol_sqrt_T = mid_iv * sqrt_T
-        d1 = (math.log(spot / strike) + 0.5 * mid_iv * mid_iv * T) / vol_sqrt_T
+        d1 = (math.log(spot / strike) + (b + 0.5 * mid_iv * mid_iv) * T) / vol_sqrt_T
         d2 = d1 - vol_sqrt_T
         nd1 = 0.5 * (1.0 + math.erf(-d1 / math.sqrt(2.0)))
         nd2 = 0.5 * (1.0 + math.erf(-d2 / math.sqrt(2.0)))
-        theo = df_r * (strike * nd2 - spot * nd1)
+        theo = strike * df_r * nd2 - spot * df_b * nd1
         if theo > put_price:
             hi = mid_iv
         else:
@@ -644,6 +653,9 @@ def fetch_live_option_chain_sample(inst_id: str, target_dte: int = 30) -> Dict[s
             ask = _fnum(r.get("ask")) or 0.0
             mid = round((bid + ask) / 2.0, 2) if (bid > 0 and ask > 0) else last_p
             iv = (_fnum(r.get("impliedVolatility")) or 0.0) * 100.0
+            px_for_iv = mid if mid > 0 else last_p
+            if (iv < 6.0 or iv > 220.0 or bid <= 0) and px_for_iv > 0:
+                iv = _solve_cffex_put_iv(spot, k, actual_dte, px_for_iv, r=0.042, is_futures=False)
             oi = int(_fnum(r.get("openInterest")) or 0)
             vol = int(_fnum(r.get("volume")) or 0)
             otm_pct = round((spot - k) / spot * 100.0, 2)
@@ -681,3 +693,107 @@ def fetch_live_option_chain_sample(inst_id: str, target_dte: int = 30) -> Dict[s
     except Exception as exc:
         logger.debug("Live option chain fail %s: %s", ticker_sym, exc)
         return {"available": False, "note": f"实时期权链请求受限: {exc}"}
+
+
+_US_IV_BG_STARTED = False
+_US_IV_MEM: Dict[str, float] = {}
+
+
+def _extract_atm_iv_from_chain(ch: Dict[str, Any]) -> Optional[float]:
+    if not ch or not ch.get("available"):
+        return None
+    puts = ch.get("puts") or []
+    if not puts:
+        return None
+    # Pick up to 3 contracts closest to ATM (otmPct in [-1%, +6%])
+    near = sorted(puts, key=lambda p: abs(float(p.get("otmPct") or 0.0) - 2.0))[:3]
+    valid_ivs = [float(p["ivPct"]) / 100.0 for p in near if 8.0 < float(p.get("ivPct") or 0.0) < 180.0]
+    if not valid_ivs:
+        return None
+    valid_ivs.sort()
+    return valid_ivs[len(valid_ivs) // 2]
+
+
+def _bg_refresh_us_option_ivs(target_dte: int = 30) -> None:
+    global _US_IV_BG_STARTED
+    try:
+        saved = load_pickle("real_us_iv_v1.pkl", max_age_sec=14400.0) or {}
+        if isinstance(saved, dict):
+            _US_IV_MEM.update(saved)
+        us_insts = [x for x in ALL_INSTRUMENTS if x["market"] == "us_stk"]
+        for inst in us_insts:
+            iid = inst["id"]
+            if iid in _US_IV_MEM:
+                continue
+            try:
+                ch = fetch_live_option_chain_sample(iid, target_dte=target_dte)
+                iv_val = _extract_atm_iv_from_chain(ch)
+                if iv_val and 0.08 <= iv_val <= 1.60:
+                    _US_IV_MEM[iid] = round(iv_val, 4)
+            except Exception:
+                continue
+        if _US_IV_MEM:
+            save_pickle("real_us_iv_v1.pkl", dict(_US_IV_MEM))
+    finally:
+        _US_IV_BG_STARTED = False
+
+
+def get_real_iv_map(
+    target_dte: int = 30,
+    macro_regime: Optional[Dict[str, Any]] = None,
+    force: bool = False,
+) -> Dict[str, Dict[str, Any]]:
+    """
+    Return verified real-market ATM Implied Volatility map: {inst_id: {"atmIv": float, "ivSource": str}}.
+    Combines:
+    1) CBOE Official Implied Volatility Indices (^VIX, ^VXN, ^OVX, ^GVZ)
+    2) CFFEX Real-Time Index Option Chains (MO / IO / HO via Sina OptionService)
+    3) US Stocks & ETFs Real Option Chains (cached on disk + background refreshed via yfinance)
+    """
+    global _US_IV_BG_STARTED
+    out: Dict[str, Dict[str, Any]] = {}
+    mr = macro_regime or {}
+
+    vix = _fnum((mr.get("items") or {}).get("VIX", {}).get("value")) or _fnum(mr.get("vix"))
+    vxn = _fnum((mr.get("items") or {}).get("VXN", {}).get("value")) or _fnum(mr.get("vxn"))
+    ovx = _fnum((mr.get("items") or {}).get("OVX", {}).get("value")) or _fnum(mr.get("ovx"))
+    gvz = _fnum((mr.get("items") or {}).get("GVZ", {}).get("value")) or _fnum(mr.get("gvz"))
+
+    if vix and vix > 5:
+        out["US_STK:SPY"] = {"atmIv": vix / 100.0, "ivSource": "🟢 实盘IV(CBOE VIX)"}
+        out["US_FUT:ES"] = {"atmIv": vix / 100.0, "ivSource": "🟢 实盘IV(CBOE VIX)"}
+    if vxn and vxn > 5:
+        out["US_STK:QQQ"] = {"atmIv": vxn / 100.0, "ivSource": "🟢 实盘IV(CBOE VXN)"}
+        out["US_FUT:NQ"] = {"atmIv": vxn / 100.0, "ivSource": "🟢 实盘IV(CBOE VXN)"}
+    if ovx and ovx > 5:
+        out["US_FUT:CL"] = {"atmIv": ovx / 100.0, "ivSource": "🟢 实盘IV(CBOE OVX)"}
+        out["US_FUT:BZ"] = {"atmIv": ovx / 100.0, "ivSource": "🟢 实盘IV(CBOE OVX)"}
+    if gvz and gvz > 5:
+        out["US_STK:GLD"] = {"atmIv": gvz / 100.0, "ivSource": "🟢 实盘IV(CBOE GVZ)"}
+        out["US_FUT:GC"] = {"atmIv": gvz / 100.0, "ivSource": "🟢 实盘IV(CBOE GVZ)"}
+
+    # Fetch CFFEX MO / IO / HO real option chain IVs synchronously (fast <0.3s via Sina)
+    for cid in ("CN_FUT:IM0", "CN_FUT:IF0", "CN_FUT:IH0"):
+        try:
+            ch = fetch_live_option_chain_sample(cid, target_dte=target_dte)
+            iv_val = _extract_atm_iv_from_chain(ch)
+            if iv_val and 0.07 <= iv_val <= 1.20:
+                out[cid] = {"atmIv": iv_val, "ivSource": f"🟢 实盘IV(中金所{ch.get('ticker','')})"}
+        except Exception:
+            pass
+
+    # Load any cached US stock option chain IVs and trigger non-blocking background refresh if needed
+    if not _US_IV_MEM:
+        saved = load_pickle("real_us_iv_v1.pkl", max_age_sec=14400.0)
+        if isinstance(saved, dict) and saved:
+            _US_IV_MEM.update(saved)
+
+    for iid, iv_val in list(_US_IV_MEM.items()):
+        if iid not in out and 0.08 <= iv_val <= 1.60:
+            out[iid] = {"atmIv": iv_val, "ivSource": "🟢 实盘IV(美股期权链)"}
+
+    if not _US_IV_BG_STARTED and len(_US_IV_MEM) < 20:
+        _US_IV_BG_STARTED = True
+        threading.Thread(target=_bg_refresh_us_option_ivs, args=(target_dte,), daemon=True).start()
+
+    return out
