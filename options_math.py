@@ -1,7 +1,12 @@
 # -*- coding: utf-8 -*-
 """
 Quantitative Option Pricing, Greeks, Strike Solver & Payoff Engine for Short Put Strategies.
-Supports both Black-Scholes-Merton (Stocks/ETFs) and Black-76 (Commodity/Financial Futures).
+Supports:
+- Black-Scholes-Merton (Stocks/ETFs)
+- Black-76 (Commodity/Financial Futures)
+- CFFEX Index Option Basis Drift Calibration (MO/IO/HO)
+- Cornish-Fisher Left-Tail Fat-Tail (Kurtosis/Skew) Strike & Probability Adjustment
+- Risk-Adjusted Carry Metrics (ATR Safety Cushion Multiple, Return-to-Vol Ratio, Theta/Vega)
 """
 from __future__ import annotations
 
@@ -11,6 +16,30 @@ from typing import Any, Dict, List, Optional
 
 _STD_NORM = NormalDist(0.0, 1.0)
 SQRT_2PI = math.sqrt(2.0 * math.pi)
+
+# Empirical annualized futures discount (basis drift) for CFFEX index options
+_CFFEX_BASIS_DRIFT: Dict[str, float] = {
+    "IM0": -0.075,  # 中证1000常年贴水年化约 6%~9%，对现货认沽期权构成额外定价偏移
+    "IF0": -0.025,  # 沪深300微幅贴水/分红率偏移
+    "IH0": -0.020,  # 上证50高分红率偏移
+}
+
+# Asset-specific left-tail excess kurtosis factor (0.0 = Gaussian, higher = fatter left tail)
+_FAT_TAIL_FACTOR: Dict[str, float] = {
+    "IM0": 0.28,
+    "TSLA": 0.30,
+    "IBIT": 0.32,
+    "NG=F": 0.32,
+    "LC0": 0.28,
+    "SA0": 0.25,
+    "SI0": 0.24,
+    "FG0": 0.22,
+    "SI=F": 0.24,
+    "AG0": 0.24,
+    "PLTR": 0.26,
+    "PDD": 0.24,
+    "BABA": 0.22,
+}
 
 
 def _norm_cdf(x: float) -> float:
@@ -50,21 +79,28 @@ def round_to_step(val: float, step: float, dp: int = 2) -> float:
     return round(rounded, max(dp, 3 if step < 0.1 else 2))
 
 
-def skew_adjusted_iv(atm_iv: float, spot: float, strike: float, skew_coeff: float = 0.12) -> float:
+def skew_adjusted_iv(
+    atm_iv: float,
+    spot: float,
+    strike: float,
+    skew_coeff: float = 0.12,
+    fat_tail: float = 0.12,
+) -> float:
     """
-    Model the empirical OTM Put volatility smile/skew:
+    Model the empirical OTM Put volatility smile/skew + left-tail kurtosis curvature:
     Lower strikes carry higher implied volatility due to crash-protection demand.
     """
     if spot <= 0 or strike <= 0:
         return atm_iv
     moneyness = math.log(spot / strike)  # > 0 for OTM put (strike < spot)
     if moneyness >= 0:
-        # OTM put skew + slight quadratic smile curvature
-        adj = 1.0 + skew_coeff * (moneyness / 0.10) + 0.025 * ((moneyness / 0.10) ** 2)
+        # OTM put linear skew + quadratic fat-tail smile curvature
+        curve_coeff = 0.025 + 0.06 * fat_tail
+        adj = 1.0 + skew_coeff * (moneyness / 0.10) + curve_coeff * ((moneyness / 0.10) ** 2)
     else:
         # Slightly ITM put
         adj = 1.0 + 0.03 * (abs(moneyness) / 0.10)
-    adj = max(0.90, min(adj, 1.55))
+    adj = max(0.90, min(adj, 1.65))
     return max(0.06, min(atm_iv * adj, 2.50))
 
 
@@ -75,24 +111,27 @@ def price_put_and_greeks(
     iv: float,
     r: float = 0.04,
     is_futures: bool = False,
+    basis_drift: float = 0.0,
+    fat_tail: float = 0.12,
 ) -> Dict[str, float]:
     """
     Calculate Put option price, Delta, Gamma, Theta (per calendar day), Vega (per 1% IV),
-    and probabilities using BSM (equity) or Black-76 (futures).
+    and fat-tail adjusted probabilities using BSM (equity) or Black-76 (futures).
     """
     T = max(int(dte), 1) / 365.0
     sigma = max(float(iv), 0.04)
     sqrt_T = math.sqrt(T)
     vol_sqrt_T = sigma * sqrt_T
 
-    # Drift of underlying under risk-neutral measure: 0 for futures (Black-76), r for spot (BSM)
-    b = 0.0 if is_futures else r
+    # Drift of underlying under risk-neutral measure:
+    # 0 for standard futures (Black-76), basis_drift for CFFEX index options, r for spot (BSM)
+    b = basis_drift if is_futures else r
 
     d1 = (math.log(spot / strike) + (b + 0.5 * sigma * sigma) * T) / vol_sqrt_T
     d2 = d1 - vol_sqrt_T
 
     df_r = math.exp(-r * T)
-    df_b = math.exp((b - r) * T)  # exp(-rT) for futures, 1.0 for spot without div
+    df_b = math.exp((b - r) * T)
 
     put_price = strike * df_r * _norm_cdf(-d2) - spot * df_b * _norm_cdf(-d1)
     put_price = max(put_price, spot * 0.0002)
@@ -109,14 +148,20 @@ def price_put_and_greeks(
         theta_annual = term1 + r * strike * df_r * _norm_cdf(-d2) - r * spot * df_b * _norm_cdf(-d1)
     else:
         theta_annual = term1 + r * strike * df_r * _norm_cdf(-d2)
-    theta_daily = theta_annual / 365.0  # negative for long put; positive income for short put is -theta_daily
+    theta_daily = theta_annual / 365.0
 
-    # Breakeven & Probability of Profit (PoP = Prob(S_T > Breakeven))
+    # Breakeven & Fat-Tail Adjusted Probability of Profit (PoP = Prob(S_T > Breakeven))
     breakeven = max(strike - put_price, strike * 0.5)
     d2_be = (math.log(spot / breakeven) + (b - 0.5 * sigma * sigma) * T) / vol_sqrt_T
-    pop_pct = _norm_cdf(d2_be) * 100.0
-    prob_otm_pct = _norm_cdf(d2) * 100.0
-    prob_touch_pct = min(99.0, max(1.0, (1.0 - _norm_cdf(d2)) * 195.0))
+
+    # Cornish-Fisher left-tail penalty: real market returns have heavier left tails than Gaussian
+    tail_haircut = 1.0 + 0.18 * fat_tail
+    d2_be_adj = d2_be / tail_haircut if d2_be > 0 else d2_be * tail_haircut
+    d2_otm_adj = d2 / tail_haircut if d2 > 0 else d2 * tail_haircut
+
+    pop_pct = _norm_cdf(d2_be_adj) * 100.0
+    prob_otm_pct = _norm_cdf(d2_otm_adj) * 100.0
+    prob_touch_pct = min(99.0, max(1.0, (1.0 - _norm_cdf(d2_otm_adj)) * 195.0))
 
     return {
         "premium": put_price,
@@ -138,12 +183,19 @@ def solve_strike_for_delta(
     atm_iv: float,
     r: float = 0.04,
     is_futures: bool = False,
+    basis_drift: float = 0.0,
+    fat_tail: float = 0.12,
 ) -> float:
-    """Analytical inverse-Delta strike solver for OTM Put."""
+    """
+    Analytical inverse-Delta strike solver for OTM Put with Cornish-Fisher fat-tail buffer.
+    Assets with high left-tail kurtosis automatically require deeper OTM strikes for the same target risk.
+    """
     T = max(int(dte), 1) / 365.0
-    sigma = max(float(atm_iv), 0.05)
+    # Effective vol for strike solving incorporates fat-tail cushion for deep OTM tiers
+    tail_mult = 1.0 + fat_tail * max(0.0, (0.38 - target_abs_delta)) * 0.65
+    sigma = max(float(atm_iv) * tail_mult, 0.05)
     sqrt_T = math.sqrt(T)
-    b = 0.0 if is_futures else r
+    b = basis_drift if is_futures else r
     df_b = math.exp((b - r) * T)
 
     # |Delta_P| = df_b * N(-d1) => -d1 = N^{-1}(|Delta_P| / df_b)
@@ -161,6 +213,8 @@ def build_put_tiers(
     atm_iv: float,
     dte: int = 30,
     supports: Optional[Dict[str, Optional[float]]] = None,
+    atr_pct: float = 1.8,
+    hv20: float = 0.22,
 ) -> Dict[str, Dict[str, Any]]:
     """
     Generate 3 actionable Short Put strike tiers:
@@ -169,8 +223,12 @@ def build_put_tiers(
     - aggressive:   Delta ~ -0.35 (浅虚值高权利金接货档)
     """
     market = inst["market"]
+    sym = inst["symbol"]
     is_futures = market in ("us_fut", "cn_fut")
     r = 0.020 if market == "cn_fut" else 0.042
+    basis_drift = _CFFEX_BASIS_DRIFT.get(sym, 0.0)
+    fat_tail = _FAT_TAIL_FACTOR.get(sym, 0.16 if market == "cn_fut" else 0.12)
+
     dp = int(inst.get("dp", 2))
     mult = float(inst.get("multiplier", 100))
     margin_rate = float(inst.get("margin_rate", 0.15))
@@ -181,15 +239,24 @@ def build_put_tiers(
     # so K_aggressive > K_balanced > K_conservative is strictly guaranteed.
     solve_order = [
         ("aggressive", "进取接货档", 0.35, "以接货建仓之心卖Put · 权利金极厚"),
-        ("balanced", "平衡甜点档", 0.25, "机构主力档 · 胜率与Theta性价比最优"),
-        ("conservative", "保守高胜率档", 0.15, "深虚值收租 · 极高胜率防穿仓"),
+        ("balanced", "平衡甜点档", 0.24, "机构主力档 · 胜率与Theta性价比最优"),
+        ("conservative", "保守高胜率档", 0.14, "深虚值收租 · 极高胜率防穿仓"),
     ]
 
     solved_map: Dict[str, Any] = {}
     prev_k: Optional[float] = None
 
     for key, label, target_d, desc in solve_order:
-        raw_k = solve_strike_for_delta(spot, target_d, dte, atm_iv, r=r, is_futures=is_futures)
+        raw_k = solve_strike_for_delta(
+            spot,
+            target_d,
+            dte,
+            atm_iv,
+            r=r,
+            is_futures=is_futures,
+            basis_drift=basis_drift,
+            fat_tail=fat_tail,
+        )
         k = round_to_step(raw_k, step, dp=dp)
         if k >= spot:
             k = round_to_step(spot - step, step, dp=dp)
@@ -199,17 +266,35 @@ def build_put_tiers(
         solved_map[key] = (key, label, target_d, desc, k)
 
     out: Dict[str, Dict[str, Any]] = {}
+    eff_atr_pct = max(float(atr_pct or 1.5), 0.35)
+    eff_hv_pct = max(float(hv20 or 0.20) * 100.0, 6.0)
+
     for key in ("conservative", "balanced", "aggressive"):
         _, label, target_d, desc, k = solved_map[key]
 
-        strike_iv = skew_adjusted_iv(atm_iv, spot, k, skew_coeff=skew_coeff)
-        res = price_put_and_greeks(spot, k, dte, strike_iv, r=r, is_futures=is_futures)
+        strike_iv = skew_adjusted_iv(atm_iv, spot, k, skew_coeff=skew_coeff, fat_tail=fat_tail)
+        res = price_put_and_greeks(
+            spot,
+            k,
+            dte,
+            strike_iv,
+            r=r,
+            is_futures=is_futures,
+            basis_drift=basis_drift,
+            fat_tail=fat_tail,
+        )
 
         prem = res["premium"]
         be = res["breakeven"]
         otm_amt = max(0.0, spot - k)
         otm_pct = (otm_amt / spot) * 100.0 if spot > 0 else 0.0
         be_buffer_pct = ((spot - be) / spot) * 100.0 if spot > 0 else 0.0
+
+        # Risk-adjusted metrics:
+        # 1) How many daily ATRs must spot fall to breach breakeven?
+        atr_buffer_mult = be_buffer_pct / eff_atr_pct
+        # 2) Theta / Vega efficiency
+        theta_vega_ratio = res["theta_daily"] / max(res["vega"], 0.001)
 
         contract_notional = spot * mult
         strike_notional = k * mult
@@ -225,6 +310,9 @@ def build_put_tiers(
         ann_margin = roc_margin * (365.0 / max(int(dte), 1))
         roc_cash = (prem / k) * 100.0 if k > 0 else 0.0
         ann_cash = roc_cash * (365.0 / max(int(dte), 1))
+
+        # 3) Return-to-Volatility Ratio (unlevered annualized cash yield / HV20%)
+        ret_to_vol_ratio = ann_cash / eff_hv_pct
 
         # Check relationship with cost floor / technical support
         cost_obj = inst.get("cost") or {}
@@ -242,6 +330,8 @@ def build_put_tiers(
                 anchor_tags.append("破布林下轨保护")
             elif s2 and k <= s2 * 1.005:
                 anchor_tags.append("S2强支撑下方")
+        if atr_buffer_mult >= 5.5:
+            anchor_tags.append(f"{atr_buffer_mult:.1f}倍ATR安全垫")
 
         out[key] = {
             "tier": key,
@@ -254,6 +344,9 @@ def build_put_tiers(
             "contractPremium": round(contract_prem, 0 if contract_prem >= 100 else 2),
             "breakeven": round(be, dp),
             "breakevenBufferPct": round(be_buffer_pct, 2),
+            "atrBufferMultiple": round(atr_buffer_mult, 1),
+            "returnToVolRatio": round(ret_to_vol_ratio, 2),
+            "thetaVegaRatio": round(theta_vega_ratio, 2),
             "delta": round(res["delta"], 3),
             "gamma": round(res["gamma"], 5),
             "thetaDaily": round(res["theta_daily"], max(dp, 3)),
@@ -287,8 +380,11 @@ def build_payoff_curve(
     Build expiration PnL and T/2 mid-term theoretical PnL curve for 1 short put contract.
     """
     market = inst["market"]
+    sym = inst["symbol"]
     is_futures = market in ("us_fut", "cn_fut")
     r = 0.020 if market == "cn_fut" else 0.042
+    basis_drift = _CFFEX_BASIS_DRIFT.get(sym, 0.0)
+    fat_tail = _FAT_TAIL_FACTOR.get(sym, 0.16 if market == "cn_fut" else 0.12)
     dp = int(inst.get("dp", 2))
     mult = float(inst.get("multiplier", 100))
 
@@ -311,7 +407,16 @@ def build_payoff_curve(
         exp_pnl.append(round(e_val, 1))
 
         # At T/2: Short Put PnL = (Premium - Put_BSM(p, K, dte/2, iv)) * multiplier
-        mid_res = price_put_and_greeks(p, strike, mid_dte, iv, r=r, is_futures=is_futures)
+        mid_res = price_put_and_greeks(
+            p,
+            strike,
+            mid_dte,
+            iv,
+            r=r,
+            is_futures=is_futures,
+            basis_drift=basis_drift,
+            fat_tail=fat_tail,
+        )
         m_val = (premium - mid_res["premium"]) * mult
         mid_pnl.append(round(m_val, 1))
 

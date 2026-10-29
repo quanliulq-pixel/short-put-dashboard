@@ -447,10 +447,11 @@
             <div class="tc-row"><span>Delta / 隐波IV</span><strong>${fmtNum(t.delta, 2)} / ${fmtNum(t.ivPct, 1)}%</strong></div>
             <div class="tc-row"><span>单手权利金</span><strong class="gold-txt">${cur}${fmtSmart(t.contractPremium)} (${cur}${fmtSmart(t.premium)}/单)</strong></div>
             <div class="tc-row"><span>盈亏平衡点(缓冲)</span><strong class="cyan-txt">${cur}${fmtSmart(t.breakeven)} (-${fmtNum(t.breakevenBufferPct, 1)}%)</strong></div>
-            <div class="tc-row"><span>到期盈利概率(PoP)</span><strong class="bull-txt">${fmtNum(t.popPct, 1)}%</strong></div>
+            <div class="tc-row"><span>ATR安全垫倍数</span><strong class="bull-txt">${fmtNum(t.atrBufferMultiple, 1)} 倍日均ATR</strong></div>
+            <div class="tc-row"><span>肥尾校准胜率(PoP)</span><strong class="bull-txt">${fmtNum(t.popPct, 1)}%</strong></div>
             <div class="tc-row"><span>单手保证金占用</span><strong>${cur}${fmtSmart(t.marginReq)}</strong></div>
             <div class="tc-row"><span>保证金口径年化</span><strong class="gold-txt">${fmtNum(t.annReturnMarginPct, 1)}%</strong></div>
-            <div class="tc-row"><span>全额现金担保年化</span><strong>${fmtNum(t.annReturnCashPct, 1)}%</strong></div>
+            <div class="tc-row"><span>全额担保年化 / 收益波动比</span><strong>${fmtNum(t.annReturnCashPct, 1)}% (${fmtNum(t.returnToVolRatio, 2)})</strong></div>
             <div class="tc-row"><span>每日Theta收租</span><strong class="bull-txt">+${cur}${fmtSmart(t.contractThetaDaily)}/日</strong></div>
           </div>
         </div>
@@ -470,17 +471,23 @@
     const a = detail.analysis;
     const sb = a.scoreBreakdown || {};
     const factors = [
-      { label: "底部安全垫与成本/估值锚", val: sb.floor || 0, max: 30 },
-      { label: "波动率溢价与收租肥度 (IVR/VRP)", val: sb.vol || 0, max: 25 },
-      { label: "技术支撑与RSI止跌企稳度", val: sb.tech || 0, max: 20 },
-      { label: "趋势健康度与防急跌飞刀过滤", val: sb.trend || 0, max: 15 },
-      { label: "期权流动性与基本面护城河", val: sb.moat || 0, max: 10 },
+      { label: "底部安全垫与估值锚 (成本×趋势矩阵)", val: sb.floor || 0, max: 30 },
+      { label: "真实VRP溢价与ATR风险调整收益", val: sb.vol || 0, max: 25 },
+      { label: "技术支撑与右侧企稳确认 (防下轨开口)", val: sb.tech || 0, max: 20 },
+      { label: `多周期趋势结构 (${a.trendRegime || "均线共振"})`, val: sb.trend || 0, max: 15 },
+      { label: `期权盘口深度 (${a.liquidityLabel || "主力活跃"})`, val: sb.moat || 0, max: 10 },
     ];
 
-    el("ws-factor-bars").innerHTML = factors
-      .map((f) => {
-        const pct = Math.min(100, Math.round((f.val / f.max) * 100));
-        return `
+    const riskBanner =
+      a.riskNotes && a.riskNotes.length
+        ? `<div style="margin-top:8px;padding:7px 10px;border-radius:6px;background:rgba(239,68,68,0.12);border:1px solid rgba(239,68,68,0.35);color:#fca5a5;font-size:11.5px;line-height:1.45;">${a.riskNotes.join("<br/>")}</div>`
+        : "";
+
+    el("ws-factor-bars").innerHTML =
+      factors
+        .map((f) => {
+          const pct = Math.min(100, Math.round((f.val / f.max) * 100));
+          return `
         <div class="fbar-row">
           <div class="fbar-hdr">
             <span>${f.label}</span>
@@ -491,8 +498,8 @@
           </div>
         </div>
       `;
-      })
-      .join("");
+        })
+        .join("") + riskBanner;
 
     // Price Ladder comparing Spot, Supports, Costs, and Strike
     const sup = a.supports || {};

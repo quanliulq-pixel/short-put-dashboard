@@ -253,13 +253,14 @@ function render() {{
       </div>
       <div style="font-size:12px;margin-bottom:4px" class="cyan">● ${{r.archetype}} · 1D ${{r.change1dPct>0?"+":""}}${{r.change1dPct}}% / 1W ${{r.ret1wPct>0?"+":""}}${{r.ret1wPct}}%</div>
       <div class="grid">
-        <div><span class="m-lbl">最新现价</span><span class="m-val">${{cur}}${{r.price}}</span></div>
+        <div><span class="m-lbl">最新现价 / 趋势</span><span class="m-val">${{cur}}${{r.price}} <small style="font-weight:500;color:var(--muted)">(${{r.trendRegime||""}})</small></span></div>
         <div><span class="m-lbl">卖Put行权价(${{t.label?.slice(0,2)||"推荐"}})</span><span class="m-val gold">${{cur}}${{t.strike}}</span></div>
-        <div><span class="m-lbl">安全垫 / 胜率</span><span class="m-val bull">${{t.otmPct}}% / ${{t.popPct}}%</span></div>
-        <div><span class="m-lbl">单手权利金</span><span class="m-val">${{cur}}${{t.contractPremium}}</span></div>
+        <div><span class="m-lbl">安全垫 / ATR缓冲</span><span class="m-val bull">${{t.otmPct}}% (${{t.atrBufferMultiple||"--"}}x ATR)</span></div>
+        <div><span class="m-lbl">肥尾胜率 / 单手权利金</span><span class="m-val bull">${{t.popPct}}% · ${{cur}}${{t.contractPremium}}</span></div>
         <div><span class="m-lbl">保证金/现金年化</span><span class="m-val gold">${{t.annReturnMarginPct}}% / ${{t.annReturnCashPct}}%</span></div>
-        <div><span class="m-lbl">隐波IV (IVR)</span><span class="m-val cyan">${{r.atmIvPct}}% (${{r.ivRank}}%)</span></div>
+        <div><span class="m-lbl">IV (VRP溢价)</span><span class="m-val cyan">${{r.atmIvPct}}% (${{r.vrpPts>=0?"+":""}}${{r.vrpPts}}%)</span></div>
       </div>
+      ${{r.riskNotes && r.riskNotes.length ? `<div style="font-size:11px;color:#fca5a5;background:rgba(239,68,68,0.12);border:1px solid rgba(239,68,68,0.3);border-radius:6px;padding:4px 8px;margin-top:5px;">${{r.riskNotes.join("；")}}</div>` : ""}}
       <div class="note">${{r.thesisSummary || ""}}</div>
     </div>`;
   }}).join("");
