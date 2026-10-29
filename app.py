@@ -16,6 +16,7 @@ import time
 
 from flask import Flask, Response, jsonify, render_template, request
 
+from backtest_engine import get_historical_review, run_portfolio_stress_test
 from data_engine import fetch_live_option_chain_sample
 from options_math import build_payoff_curve, price_put_and_greeks, skew_adjusted_iv
 from recommender import get_instrument_detail, get_weekly_recommendations
@@ -399,6 +400,31 @@ def api_simulate():
             "payoff": payoff,
         }
     )
+
+
+@app.route("/api/backtest")
+def api_backtest():
+    cohorts = request.args.get("cohorts", default=52, type=int) or 52
+    hold = request.args.get("hold", default=20, type=int) or 20
+    force = request.args.get("force") == "1"
+    try:
+        data = get_historical_review(hold_trading_days=hold, num_cohorts=cohorts, force=force)
+        return jsonify(data)
+    except Exception as exc:
+        logger.exception("api_backtest failed")
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.route("/api/stress-test")
+def api_stress_test():
+    dte = request.args.get("dte", default=30, type=int) or 30
+    force = request.args.get("force") == "1"
+    try:
+        data = run_portfolio_stress_test(target_dte=dte, force=force)
+        return jsonify(data)
+    except Exception as exc:
+        logger.exception("api_stress_test failed")
+        return jsonify({"error": str(exc)}), 500
 
 
 def _bg_warmup():

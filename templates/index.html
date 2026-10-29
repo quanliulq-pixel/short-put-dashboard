@@ -395,6 +395,166 @@
       </div>
     </section>
 
+    <!-- 第四部分：卖Put历史实证检验、分数段单调性校准与组合压力测试 -->
+    <section class="section-block backtest-section" id="backtest-section">
+      <div class="section-header">
+        <div>
+          <h2>卖Put历史推荐全样本实证检验 & 组合极端压力测试</h2>
+          <p class="sub">52周滚动全样本实证 · 分数段胜率单调性检验 · 硬止损纪律对比 · -1σ/-2σ/-3σ 极端暴跌流动性压力测试</p>
+        </div>
+
+        <div class="table-filters">
+          <div class="seg" id="bt-cohort-tabs">
+            <button type="button" data-cohorts="12">近12周 (3个月)</button>
+            <button type="button" data-cohorts="26">近26周 (半年)</button>
+            <button type="button" data-cohorts="52" class="active">近52周 (1年全样本)</button>
+            <button type="button" data-cohorts="104">近104周 (2年长周期)</button>
+          </div>
+          <div class="seg" id="bt-tier-tabs">
+            <button type="button" data-tier="auto" class="active">★ 智能推荐档</button>
+            <button type="button" data-tier="conservative">保守高胜率</button>
+            <button type="button" data-tier="balanced">平衡甜点档</button>
+            <button type="button" data-tier="aggressive">进取接货档</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- 6大核心实证 KPI 卡片 -->
+      <div class="bt-kpi-grid">
+        <div class="bt-kpi-card">
+          <span class="bk-lbl">全历史推荐总笔数</span>
+          <strong class="bk-val" id="bt-total">-- 笔</strong>
+          <span class="bk-sub" id="bt-total-sub">加载中…</span>
+        </div>
+        <div class="bt-kpi-card bull-border">
+          <span class="bk-lbl">✅ 未行权 · 全额收租</span>
+          <strong class="bk-val bull-txt" id="bt-unassigned">--%</strong>
+          <span class="bk-sub" id="bt-unassigned-sub">期末标的价 ≥ 行权价K</span>
+        </div>
+        <div class="bt-kpi-card cyan-border">
+          <span class="bk-lbl">🟡 被行权 · 仍有盈利</span>
+          <strong class="bk-val cyan-txt" id="bt-assigned">--%</strong>
+          <span class="bk-sub" id="bt-assigned-sub">跌破K但高于盈亏平衡点</span>
+        </div>
+        <div class="bt-kpi-card gold-border">
+          <span class="bk-lbl">🛡️ 小幅浮亏接货</span>
+          <strong class="bk-val gold-txt" id="bt-assigned-detail">-- 笔</strong>
+          <span class="bk-sub" id="bt-assigned-detail-sub">权利金缓冲垫吸收跌幅</span>
+        </div>
+        <div class="bt-kpi-card bear-border">
+          <span class="bk-lbl">🔴 击穿安全垫 · 大幅亏损</span>
+          <strong class="bk-val bear-txt" id="bt-heavyloss">--%</strong>
+          <span class="bk-sub" id="bt-heavyloss-sub">净亏损 > 2倍权利金</span>
+        </div>
+        <div class="bt-kpi-card gold-border">
+          <span class="bk-lbl">🏆 综合胜率 & 期望R倍数</span>
+          <strong class="bk-val gold-txt" id="bt-winrate">--%</strong>
+          <span class="bk-sub" id="bt-winrate-sub">按保证金口径年化净回报</span>
+        </div>
+      </div>
+
+      <!-- 逐周逐期交付结果柱状图 + 综合胜率趋势折线 -->
+      <div class="panel" style="margin-top:14px;">
+        <div class="panel-header">
+          <div>
+            <h3>逐周滚动推荐样本行权状态堆叠分布 & 胜率演进</h3>
+            <p class="sub">绿色：未行权拿满权利金 | 蓝色：行权仍盈利 | 黄色：轻度亏损 | 红色：大幅亏损 | 黄折线：当期综合胜率%</p>
+          </div>
+        </div>
+        <div id="bt-cohort-chart" style="width:100%;height:280px;"></div>
+      </div>
+
+      <!-- 核心检验双拼栏：左栏分数段单调性校准，右栏硬止损纪律对比与压力测试 -->
+      <div class="ws-grid" style="margin-top:14px;">
+        <!-- 左侧：全样本分数段单调性检验 -->
+        <div class="panel">
+          <div class="panel-header">
+            <div>
+              <h3>全样本分数段单调性实证检验 (Monotonicity Calibration)</h3>
+              <p class="sub">统计各评分段的真实胜率与大亏率，验证高评分是否严格对应低风险与高胜率</p>
+            </div>
+          </div>
+          <div id="bt-bucket-comparison" class="table-container" style="max-height:none;">
+            <div class="empty-note">正在计算分数段单调性数据…</div>
+          </div>
+        </div>
+
+        <!-- 右侧：硬止损对比 & 组合极端压力测试 -->
+        <div class="panel">
+          <div class="panel-header">
+            <div>
+              <h3>硬止损纪律对比 & 组合极端流动性压力测试</h3>
+              <p class="sub">持有到期 vs -2.5R硬止损截断 | -1σ/-2σ/-3σ 暴跌跳空保证金激增测算</p>
+            </div>
+          </div>
+          <div id="bt-stress-panel" style="display:flex; flex-direction:column; gap:12px; padding:10px 0;">
+            <div class="empty-note">正在测算极端压力测试情景…</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 分市场与三档行权价横向对比表 -->
+      <div class="panel" style="margin-top:14px;">
+        <div class="panel-header">
+          <div>
+            <h3>分市场实证表现 & 三档行权价(保守/平衡/进取) 横向对比</h3>
+            <p class="sub">A股股指期权 / 美股与ETF / 美国期货 / 中国期货 分市场统计</p>
+          </div>
+        </div>
+        <div id="bt-market-comparison" class="table-container" style="max-height:none;">
+          <div class="empty-note">正在统计分市场历史胜率…</div>
+        </div>
+      </div>
+
+      <!-- 详细历史交割交易台账 -->
+      <div class="panel" style="margin-top:14px;">
+        <div class="panel-header">
+          <div>
+            <h3>历史推荐逐笔交割追踪总台账 (Detailed Historical Ledger)</h3>
+            <p class="sub">记录每期入场现价、行权价K、安全垫OTM、持有期最低价、期末收盘价及最终净盈亏与R倍数</p>
+          </div>
+          <div class="table-filters" style="margin-bottom:0;">
+            <div class="seg" id="bt-outcome-tabs">
+              <button type="button" data-out="all" class="active">全部结果</button>
+              <button type="button" data-out="SAFE">仅看未行权</button>
+              <button type="button" data-out="ASSIGNED">仅看被行权</button>
+              <button type="button" data-out="HEAVY_LOSS">⚠️ 仅看大幅亏损</button>
+            </div>
+            <select id="bt-mkt-filter" class="filter-select">
+              <option value="all">全部市场品种</option>
+              <option value="cn_idx">A股三大股指(MO/IO/HO)</option>
+              <option value="us_stk">美股与ETF</option>
+              <option value="us_fut">美国期货</option>
+              <option value="cn_fut">中国商品期货</option>
+            </select>
+          </div>
+        </div>
+        <div class="table-container" style="max-height: 480px;">
+          <table class="screener-table">
+            <thead>
+              <tr>
+                <th>期数 / 到期状态</th>
+                <th>标的品种</th>
+                <th class="num">入场评分</th>
+                <th class="num">推荐现价</th>
+                <th class="num">卖Put行权价</th>
+                <th class="num">虚值安全垫</th>
+                <th class="num">盈亏平衡点</th>
+                <th class="num">期间最低(最大跌幅)</th>
+                <th class="num">期末价(实际涨跌)</th>
+                <th>行权盈亏判定</th>
+                <th class="num">单手权利金</th>
+                <th class="num">最终净收益(R倍数)</th>
+              </tr>
+            </thead>
+            <tbody id="bt-ledger-tbody">
+              <tr><td colspan="12" class="empty-cell">正在拉取历史交割记录…</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
     <footer class="app-footer">
       <p>量化模型说明（v2.1）：美股采用 BSM 定价并对跨季报窗口做跳空风险折价（优先使用 Yahoo 真实财报日，取不到时用估算日历）；美期货、中国期货及中金所股指期权（MO/IO/HO，按股指期货价格）采用 Black-76 模型（b=0，期货价格已含贴水，不再额外修正）。行权价与胜率含经验性左尾肥尾折扣（非完整 Cornish-Fisher 展开）；多数品种的隐含波动率、IV分位与VRP为模型估算值而非实盘报价；商品成本中枢为静态研究锚点，现价低于表中现金成本10%以上时视为成本锚失效、按中性计分。评分权重未经历史回测校准，仅供期权卖方研究参考，不构成投资建议。</p>
     </footer>
@@ -406,6 +566,7 @@
     <button type="button" data-target="top-picks-section">🏆 三市场精选</button>
     <button type="button" data-target="workstation-section">🔬 期权工作站</button>
     <button type="button" data-target="screener-section">📋 79品种全表</button>
+    <button type="button" data-target="backtest-section">📊 实证回测</button>
   </nav>
 
   <!-- iPhone 扫码看盘 & 离线周报导出弹窗 -->
