@@ -808,6 +808,11 @@ def analyze_single_instrument(
     ivr_pts = _interp_linear(iv_rank, [(10.0, 2.5), (35.0, 4.2), (60.0, 5.6), (85.0, 6.5)])
     raw_vrp_score = _interp_linear(vrp_pts, [(-3.0, 0.5), (0.0, 1.5), (3.5, 2.8), (7.0, 3.5)])
     vrp_score_pts = raw_vrp_score if is_real_iv else min(1.8, raw_vrp_score)
+    # Earnings event vol inside the window is jump risk, not a harvestable premium:
+    # cap IVR & VRP sub-scores at neutral so pre-earnings IV inflation cannot offset the earnings penalty.
+    if earnings_info and earnings_info.get("inWindow"):
+        ivr_pts = min(ivr_pts, 4.2)
+        vrp_score_pts = min(vrp_score_pts, 1.5)
 
     ret_to_vol = bal_tier["returnToVolRatio"]
     ann_ret = bal_tier["annReturnMarginPct"] if inst["market"] != "us_stk" else bal_tier["annReturnCashPct"]
