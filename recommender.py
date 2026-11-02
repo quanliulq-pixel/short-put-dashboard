@@ -32,6 +32,7 @@ from data_engine import (
 )
 from http_utils import cached, get_week_context, load_pickle, now_bj, save_pickle
 from options_math import build_payoff_curve, build_put_tiers, compute_vol_skew_and_term
+from spot_futures_engine import analyze_direct_underlying_trade
 from universe import ALL_INSTRUMENTS, get_instrument
 
 logger = logging.getLogger(__name__)
@@ -630,6 +631,7 @@ def analyze_single_instrument(
         "bollLow": round(boll_low, dp),
         "bollUp": round(boll_up, dp),
         "low20d": round(low_20d, dp),
+        "high20d": round(high_20d, dp),
         "low52w": round(low_52w, dp),
         "high52w": round(high_52w, dp),
         "s1": round(s1, dp),
@@ -954,6 +956,37 @@ def analyze_single_instrument(
     roll_gap_count = int(bars[-1].get("rollGapCount") or 0)
     last_roll_date = str(bars[-1].get("lastRollDate") or "")
 
+    direct_trade = analyze_direct_underlying_trade(
+        inst=inst,
+        bars=bars,
+        spot=spot,
+        ma5=ma5,
+        ma20=ma20,
+        ma60=ma60,
+        ma120=ma120,
+        ma20_slope_pct=ma20_slope_pct,
+        ma60_slope_pct=ma60_slope_pct,
+        rsi=rsi,
+        atr=atr,
+        atr_pct=atr_pct,
+        hv20=hv20,
+        atm_iv=atm_iv,
+        iv_rank=iv_rank,
+        vrp_pts=vrp_pts,
+        pct_3y=pct_3y,
+        pct_5y=pct_5y,
+        dd_52w_pct=dd_52w_pct,
+        ret_1w=ret_1w,
+        ret_1m=ret_1m,
+        ret_3m=ret_3m,
+        trend_regime=trend_regime,
+        supports=supports,
+        cost_info=cost_info,
+        rec_put_tier=rec_tier,
+        put_score=total_score,
+        target_dte=target_dte,
+    )
+
     playbook = _build_weekly_playbook(
         inst=inst,
         spot=spot,
@@ -973,6 +1006,7 @@ def analyze_single_instrument(
         rec_key=rec_tier_key,
         archetype=archetype,
         target_dte=target_dte,
+        direct_trade=direct_trade,
     )
 
     return {
@@ -1029,6 +1063,7 @@ def analyze_single_instrument(
             "moat": round(moat_score, 1),       # /10
             "penalty": round(bear_discount - (float(earnings_info["penalty"]) if earnings_info else 0.0), 1),
         },
+        "directTrade": direct_trade,
         "archetype": archetype,
         "badgeTone": badge_tone,
         "thesisTags": thesis_tags,
@@ -1145,6 +1180,7 @@ def _build_weekly_playbook(
     rec_key: str,
     archetype: str,
     target_dte: int,
+    direct_trade: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     rec = tiers[rec_key]
     cons = tiers["conservative"]
@@ -1217,6 +1253,22 @@ def _build_weekly_playbook(
         else ""
     )
 
+    direct_txt = ""
+    if direct_trade:
+        tp = direct_trade.get("tradePlan") or {}
+        vp = direct_trade.get("vsPut") or {}
+        emp = direct_trade.get("empirical") or {}
+        sz = direct_trade.get("sizing") or {}
+        direct_txt = (
+            f"【{direct_trade.get('signalBadge', '')} · 评分 {direct_trade.get('directScore', 0)}分】"
+            f"建议建仓参考 {cur}{tp.get('idealEntry', spot):g}（现价 {cur}{spot:g}），"
+            f"2.0×ATR硬止损位 {cur}{tp.get('stopLoss', 0):g}（-{tp.get('stopLossPct', 0):.1f}%），"
+            f"T1目标 {cur}{tp.get('target1', 0):g}（+{tp.get('target1Pct', 0):.1f}%）/ T2波段目标 {cur}{tp.get('target2', 0):g}"
+            f"（+{tp.get('target2Pct', 0):.1f}%，波段盈亏比 {tp.get('rrRatioT2', 0)}:1，5年同态实证胜率 {emp.get('winRatePct', 0):.1f}%）。"
+            f"按1.5%账户风险定仓建议 {sz.get('recUnits', 1)}{sz.get('unitName', '手')}。"
+            f"【最优工具判定：{vp.get('optimalLabel', '')}】{vp.get('decisionReason', '')}"
+        )
+
     stop_px = round(rec["breakeven"] * 0.985, int(inst.get("dp", 2)))
     risk_prefix = f"【风控预警：{'；'.join(risk_notes)}】 " if risk_notes else ""
     risk_control = (
@@ -1233,6 +1285,7 @@ def _build_weekly_playbook(
         "riskControl": risk_control,
         "spreadLogic": spread_txt,
         "wheelLogic": wheel_txt,
+        "directTradeLogic": direct_txt,
     }
 
 
@@ -1362,6 +1415,73 @@ def get_weekly_recommendations(
             key=lambda x: idx_order.get(x["id"], 99),
         )
 
+        # Direct Stock & Futures Trading Top Picks & Summary
+        long_stk_candidates = sorted(
+            [r for r in us_stk_list if (r.get("directTrade") or {}).get("direction") == "LONG"],
+            key=lambda x: (x.get("directTrade") or {}).get("directScore", 0),
+            reverse=True,
+        )
+        long_fut_candidates = sorted(
+            [r for r in (us_fut_list + cn_fut_list) if (r.get("directTrade") or {}).get("direction") == "LONG"],
+            key=lambda x: (x.get("directTrade") or {}).get("directScore", 0),
+            reverse=True,
+        )
+        short_fut_candidates = sorted(
+            [r for r in (us_fut_list + cn_fut_list) if (r.get("directTrade") or {}).get("direction") == "SHORT"],
+            key=lambda x: (x.get("directTrade") or {}).get("directScore", 0),
+            reverse=True,
+        )
+        # If fewer than 6 pure SHORT futures exist in current bull/range market, append highest-percentile/lowest-putScore futures with overbought/resistance setup
+        if len(short_fut_candidates) < 6:
+            have_short_ids = {r["id"] for r in short_fut_candidates}
+            extra_short = sorted(
+                [r for r in (us_fut_list + cn_fut_list) if r["id"] not in have_short_ids],
+                key=lambda x: (x.get("pct5y", 50.0) * 0.5 + x.get("rsi14", 50.0) * 0.5 - x.get("putScore", 70.0) * 0.3),
+                reverse=True,
+            )
+            short_fut_candidates.extend(extra_short[: 6 - len(short_fut_candidates)])
+
+        top_direct_us_stk = long_stk_candidates[:6]
+        top_direct_fut_long = long_fut_candidates[:6]
+        top_direct_fut_short = short_fut_candidates[:6]
+
+        strong_long_count = sum(
+            1
+            for r in all_rows
+            if (r.get("directTrade") or {}).get("direction") == "LONG"
+            and (r.get("directTrade") or {}).get("directScore", 0) >= 78.0
+        )
+        short_signal_count = sum(
+            1
+            for r in all_rows
+            if (r.get("directTrade") or {}).get("direction") == "SHORT"
+        )
+        prefer_direct_count = sum(
+            1
+            for r in all_rows
+            if ((r.get("directTrade") or {}).get("vsPut") or {}).get("optimalVehicle") in ("DIRECT_LONG", "DIRECT_SHORT")
+        )
+        hybrid_combo_count = sum(
+            1
+            for r in all_rows
+            if ((r.get("directTrade") or {}).get("vsPut") or {}).get("optimalVehicle") == "HYBRID_COMBO"
+        )
+        prefer_put_count = sum(
+            1
+            for r in all_rows
+            if ((r.get("directTrade") or {}).get("vsPut") or {}).get("optimalVehicle") == "SHORT_PUT"
+        )
+        avg_rr = round(
+            sum(((r.get("directTrade") or {}).get("tradePlan") or {}).get("rrRatioT2", 2.0) for r in all_rows)
+            / max(len(all_rows), 1),
+            2,
+        )
+        avg_emp_wr = round(
+            sum(((r.get("directTrade") or {}).get("empirical") or {}).get("winRatePct", 55.0) for r in all_rows)
+            / max(len(all_rows), 1),
+            1,
+        )
+
         # Summary KPIs
         avg_score = round(sum(r["putScore"] for r in all_rows) / max(len(all_rows), 1), 1)
         below_cost_count = sum(
@@ -1384,6 +1504,20 @@ def get_weekly_recommendations(
                 "belowCostCount": below_cost_count,
                 "highIvrCount": high_ivr_count,
                 "realIvCount": real_iv_count,
+            },
+            "directTradeSummary": {
+                "strongLongCount": strong_long_count,
+                "shortSignalCount": short_signal_count,
+                "preferDirectCount": prefer_direct_count,
+                "hybridComboCount": hybrid_combo_count,
+                "preferPutCount": prefer_put_count,
+                "avgRrRatio": avg_rr,
+                "avgEmpWinRatePct": avg_emp_wr,
+            },
+            "directTopPicks": {
+                "usStkLong": top_direct_us_stk,
+                "futLong": top_direct_fut_long,
+                "futShort": top_direct_fut_short,
             },
             "cnIndexOptions": cn_index_options,
             "topPicks": {

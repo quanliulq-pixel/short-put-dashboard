@@ -78,6 +78,7 @@
       state.data = json;
       renderHeaderAndMacro(json);
       renderTopPicks(json);
+      renderDirectTradeSection(json);
       renderCnIndexOptions(json);
       renderScreenerTable();
 
@@ -242,6 +243,109 @@
     });
   }
 
+  // ---------------- Render Direct Stock / Futures Trading Section ----------------
+  function renderDirectTradeSection(data) {
+    const dtSum = data.directTradeSummary || {};
+    const dtPicks = data.directTopPicks || {};
+
+    if (el("dt-kpi-long")) el("dt-kpi-long").textContent = `${dtSum.strongLongCount || 0} 个`;
+    if (el("dt-kpi-short")) el("dt-kpi-short").textContent = `${dtSum.shortSignalCount || 0} 个`;
+    if (el("dt-kpi-prefer-direct")) el("dt-kpi-prefer-direct").textContent = `${dtSum.preferDirectCount || 0} 个`;
+    if (el("dt-kpi-combo")) el("dt-kpi-combo").textContent = `${dtSum.hybridComboCount || 0} 个`;
+    if (el("dt-kpi-prefer-put")) el("dt-kpi-prefer-put").textContent = `${dtSum.preferPutCount || 0} 个`;
+    if (el("dt-kpi-rr")) {
+      el("dt-kpi-rr").textContent = `1 : ${fmtNum(dtSum.avgRrRatio, 2)} (${fmtNum(dtSum.avgEmpWinRatePct, 1)}%)`;
+    }
+
+    const usStkLong = dtPicks.usStkLong || [];
+    const futLong = dtPicks.futLong || [];
+    const futShort = dtPicks.futShort || [];
+
+    if (el("dt-count-usstk")) el("dt-count-usstk").textContent = `Top ${usStkLong.length}`;
+    if (el("dt-count-fut-long")) el("dt-count-fut-long").textContent = `Top ${futLong.length}`;
+    if (el("dt-count-fut-short")) el("dt-count-fut-short").textContent = `Top ${futShort.length}`;
+
+    renderDirectPickColumn("dt-picks-us-stk", usStkLong);
+    renderDirectPickColumn("dt-picks-fut-long", futLong);
+    renderDirectPickColumn("dt-picks-fut-short", futShort);
+  }
+
+  function renderDirectPickColumn(containerId, list) {
+    const box = el(containerId);
+    if (!box) return;
+    if (!list || !list.length) {
+      box.innerHTML = `<div class="empty-note">当前市场环境下暂无高分直买/做空信号（建议以卖Put收租为主）</div>`;
+      return;
+    }
+
+    box.innerHTML = list
+      .map((r, idx) => {
+        const dt = r.directTrade || {};
+        const tp = dt.tradePlan || {};
+        const emp = dt.empirical || {};
+        const vp = dt.vsPut || {};
+        const cur = r.currency || "";
+        const isShort = dt.direction === "SHORT";
+        const dirBadgeCls = isShort ? "bear-txt" : dt.direction === "LONG" ? "bull-txt" : "gold-txt";
+        const activeCls = r.id === state.selectedId ? "active" : "";
+
+        return `
+        <div class="pick-card ${activeCls}" data-id="${r.id}">
+          <div class="pc-top">
+            <div>
+              <span class="pc-name">${idx + 1}. ${r.name}</span>
+              <span class="pc-sym">${r.symbol} · ${r.marketLabel}</span>
+            </div>
+            <span class="pc-score" style="${isShort ? 'background:rgba(239,68,68,0.16);color:#f87171;border-color:rgba(239,68,68,0.4);' : 'background:rgba(59,130,246,0.18);color:#60a5fa;border-color:rgba(59,130,246,0.45);'}" title="直接买卖五维量化评分">${fmtNum(dt.directScore, 1)}分</span>
+          </div>
+
+          <div class="pc-archetype ${dirBadgeCls}">${dt.actionBadge || "--"} · ${dt.setupArchetype || ""}</div>
+
+          <div class="pc-metrics">
+            <div class="pcm-item">
+              <span class="pcm-lbl">最新现价 / 建议挂单</span>
+              <span class="pcm-val">${cur}${fmtSmart(r.price)} / <strong class="cyan-txt">${cur}${fmtSmart(tp.idealEntry)}</strong></span>
+            </div>
+            <div class="pcm-item">
+              <span class="pcm-lbl">ATR硬止损位 (幅度)</span>
+              <span class="pcm-val bear-txt">${cur}${fmtSmart(tp.stopLoss)} (${fmtSignPct(tp.stopLossPct, 1)})</span>
+            </div>
+            <div class="pcm-item">
+              <span class="pcm-lbl">T1第一目标 / T2主升目标</span>
+              <span class="pcm-val bull-txt">${cur}${fmtSmart(tp.target1)} / <strong>${cur}${fmtSmart(tp.target2)}</strong></span>
+            </div>
+            <div class="pcm-item">
+              <span class="pcm-lbl">风险收益比 (R:R)</span>
+              <span class="pcm-val gold-txt">1 : ${fmtNum(tp.rrRatioT2, 2)} <small style="color:var(--text-muted)">(T1 1:${fmtNum(tp.rrRatioT1, 1)})</small></span>
+            </div>
+            <div class="pcm-item">
+              <span class="pcm-lbl">5年同态20D回测胜率</span>
+              <span class="pcm-val bull-txt">${fmtNum(emp.winRatePct, 1)}% <small style="color:var(--text-muted)">(${emp.expectedR >= 0 ? "+" : ""}${fmtNum(emp.expectedR, 2)}R)</small></span>
+            </div>
+            <div class="pcm-item">
+              <span class="pcm-lbl">踏空临界点 (S+P)</span>
+              <span class="pcm-val cyan-txt">${cur}${fmtSmart(vp.upsideCrossoverPx)} (+${fmtNum(vp.upsideCrossoverPct, 1)}%)</span>
+            </div>
+          </div>
+
+          <div class="pc-tags">
+            <span class="mini-tag" style="border-color:rgba(245,158,11,0.45);color:#fbbf24;">${vp.optimalLabel || "工具对比"}</span>
+            <span class="mini-tag">卖Put评分 ${fmtNum(r.putScore, 1)}分</span>
+            <span class="mini-tag">有效杠杆 ${fmtNum(dt.sizing?.effectiveLeverage, 1)}x</span>
+          </div>
+        </div>
+      `;
+      })
+      .join("");
+
+    box.querySelectorAll(".pick-card").forEach((card) => {
+      card.addEventListener("click", () => {
+        const id = card.getAttribute("data-id");
+        selectInstrument(id, true);
+      });
+    });
+  }
+
   // ---------------- Render CFFEX Index Options (IM0 / IF0 / IH0) ----------------
   function renderCnIndexOptions(data) {
     const grid = el("cn-index-grid");
@@ -383,6 +487,7 @@
 
       renderWorkstationHeader(detail);
       renderTierCards(detail);
+      renderWorkstationDirectTrade(detail);
       renderFactorsAndLadder(detail);
       renderVolSurfaceAndRoll(detail);
       renderPlaybook(detail);
@@ -421,7 +526,82 @@
     el("ws-chg").innerHTML = `<span class="${colorCls(a.change1dPct)}">${fmtSignPct(a.change1dPct)}</span> / <span class="${colorCls(a.ret1wPct)}">${fmtSignPct(a.ret1wPct)}</span>`;
     el("ws-iv").textContent = `${fmtNum(a.atmIvPct, 1)}% (${a.ivSource || "估算IV"} · IVR ${fmtNum(a.ivRank, 0)}%)`;
     el("ws-rsi-pct").textContent = `RSI ${fmtNum(a.rsi14, 1)} · 5Y分位 ${fmtNum(a.pct5y, 0)}%`;
-    el("ws-score").textContent = `${fmtNum(a.putScore, 1)} / 100`;
+    el("ws-score").textContent = `${fmtNum(a.putScore, 1)} / ${fmtNum(a.directTrade?.directScore, 1)}`;
+  }
+
+  function renderWorkstationDirectTrade(detail) {
+    const box = el("ws-direct-trade-panel");
+    if (!box) return;
+    const a = detail.analysis || {};
+    const dt = a.directTrade || {};
+    if (!dt.tradePlan) {
+      box.innerHTML = `<div class="empty-note">暂无直接买卖分析数据</div>`;
+      return;
+    }
+
+    const cur = a.currency || "";
+    const tp = dt.tradePlan || {};
+    const sz = dt.sizing || {};
+    const emp = dt.empirical || {};
+    const vp = dt.vsPut || {};
+    const activeTier = (a.tiers && a.tiers[state.selectedTierKey]) || a.recommendedTier || {};
+
+    const isShort = dt.direction === "SHORT";
+    const dirCls = isShort ? "bear-txt" : dt.direction === "LONG" ? "bull-txt" : "gold-txt";
+
+    if (el("ws-dt-sub")) {
+      el("ws-dt-sub").textContent = `${dt.actionBadge || "--"} · ${dt.setupArchetype || ""} · 最优工具判定: ${vp.optimalLabel || "--"}`;
+    }
+
+    box.innerHTML = `
+      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:8px;">
+        <div style="background:rgba(8,12,20,0.6);border:1px solid var(--border);border-radius:6px;padding:7px 9px;">
+          <span style="font-size:11px;color:var(--text-muted);display:block;">方向信号 & 评分</span>
+          <strong class="${dirCls}" style="font-size:13.5px;">${dt.actionBadge || "--"} (${fmtNum(dt.directScore, 1)}分)</strong>
+          <small style="color:var(--text-muted);display:block;">${dt.setupArchetype || ""}</small>
+        </div>
+        <div style="background:rgba(8,12,20,0.6);border:1px solid var(--border);border-radius:6px;padding:7px 9px;">
+          <span style="font-size:11px;color:var(--text-muted);display:block;">挂单区 → 2×ATR止损</span>
+          <strong class="cyan-txt" style="font-size:13.5px;">${cur}${fmtSmart(tp.idealEntry)} → <span class="bear-txt">${cur}${fmtSmart(tp.stopLoss)}</span></strong>
+          <small style="color:var(--text-muted);display:block;">突破确认价 ${cur}${fmtSmart(tp.breakoutEntry)} · 止损幅度 ${fmtSignPct(tp.stopLossPct, 1)}</small>
+        </div>
+        <div style="background:rgba(8,12,20,0.6);border:1px solid var(--border);border-radius:6px;padding:7px 9px;">
+          <span style="font-size:11px;color:var(--text-muted);display:block;">波段目标 T1 / T2 (盈亏比)</span>
+          <strong class="bull-txt" style="font-size:13.5px;">${cur}${fmtSmart(tp.target1)} / ${cur}${fmtSmart(tp.target2)}</strong>
+          <small style="color:var(--text-muted);display:block;">R:R = 1:${fmtNum(tp.rrRatioT2, 2)} (幅度 ${fmtSignPct(tp.target2Pct, 1)})</small>
+        </div>
+        <div style="background:rgba(8,12,20,0.6);border:1px solid var(--border);border-radius:6px;padding:7px 9px;">
+          <span style="font-size:11px;color:var(--text-muted);display:block;">5Y同态20日回测 (${emp.sampleCount || 0}次)</span>
+          <strong class="gold-txt" style="font-size:13.5px;">胜率 ${fmtNum(emp.winRatePct, 1)}% (${emp.expectedR >= 0 ? "+" : ""}${fmtNum(emp.expectedR, 2)}R)</strong>
+          <small style="color:var(--text-muted);display:block;">盈亏因子 PF=${fmtNum(emp.profitFactor, 2)} · 均盈+${fmtNum(emp.avgWinPct, 1)}%</small>
+        </div>
+      </div>
+
+      <div style="background:rgba(15,23,42,0.75);border:1px solid rgba(59,130,246,0.35);border-radius:7px;padding:8px 10px;margin-bottom:8px;font-size:11.5px;line-height:1.5;">
+        <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px;margin-bottom:4px;">
+          <strong style="color:#93c5fd;">⚖️ 【直接买卖标的 vs 卖Put期权】量化同台PK决策矩阵</strong>
+          <span class="badge badge-gold">${vp.optimalLabel || "--"}</span>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:6px 0;padding:6px 0;border-top:1px dashed rgba(148,163,184,0.2);border-bottom:1px dashed rgba(148,163,184,0.2);">
+          <div>
+            <span style="color:var(--text-muted);">🚀 踏空临界点 (Spot + Put权利金):</span><br/>
+            <strong class="gold-txt">${cur}${fmtSmart(vp.upsideCrossoverPx)} (${fmtSignPct(vp.upsideCrossoverPct, 1)})</strong>
+            <div style="font-size:10.5px;color:var(--text-muted);">到期涨幅超 +${fmtNum(vp.upsideCrossoverPct, 1)}% 时，直买收益超越卖Put封顶权利金</div>
+          </div>
+          <div>
+            <span style="color:var(--text-muted);">🛡️ 下行安全垫缓冲对比:</span><br/>
+            <strong class="bull-txt">卖Put平衡点 ${cur}${fmtSmart(vp.downsideCushionPx)} (-${fmtNum(vp.downsideCushionPct, 1)}%)</strong>
+            <div style="font-size:10.5px;color:var(--text-muted);">直买从现价 ${cur}${fmtSmart(a.price)} 即刻承受1:1线性波动 (Delta=1.0)</div>
+          </div>
+          <div>
+            <span style="color:var(--text-muted);">💰 1.5%风控头寸与资金占用:</span><br/>
+            <strong class="cyan-txt">建议 ${sz.recUnits || 1}${sz.unitLabel || "手"} · 保证金/本金 ${cur}${fmtSmart(sz.marginOrCashReq)}</strong>
+            <div style="font-size:10.5px;color:var(--text-muted);">直买有效杠杆 ${fmtNum(sz.effectiveLeverage, 1)}x | T2预计净利 +${cur}${fmtSmart(sz.estProfitT2)} (止损额 -${cur}${fmtSmart(sz.maxStopLossAmt)})</div>
+          </div>
+        </div>
+        <div style="color:#e2e8f0;"><strong>🎯 机构决策建议：</strong>${vp.decisionReason || "--"}</div>
+      </div>
+    `;
   }
 
   function renderTierCards(detail) {
@@ -620,6 +800,7 @@
       <div class="pb-item pb-bull"><strong>【本周执行结论】</strong>${pb.headline || "--"}</div>
       <div class="pb-item pb-cyan"><strong>【基本面与成本/估值定位】</strong>${pb.whyNow || "--"}</div>
       <div class="pb-item"><strong>【行权价安全垫与收益测算】</strong>${pb.strikeLogic || "--"}</div>
+      ${pb.directTradeLogic ? `<div class="pb-item" style="border-left:3px solid #3b82f6;"><strong>【📈 直接买卖股票/期货 vs 卖Put期权对比】</strong>${pb.directTradeLogic}</div>` : ""}
       ${pb.spreadLogic ? `<div class="pb-item" style="border-left:3px solid #a855f7;"><strong>【🛡️ 牛市看跌价差 (Bull Put Spread) 对冲方案】</strong>${pb.spreadLogic}</div>` : ""}
       ${pb.wheelLogic ? `<div class="pb-item" style="border-left:3px solid #38bdf8;"><strong>【🔄 车轮策略 (The Wheel) 接货后备兑闭环】</strong>${pb.wheelLogic}</div>` : ""}
       <div class="pb-item pb-risk"><strong>【止盈纪律与防穿仓展期(Roll)风控】</strong>${pb.riskControl || "--"}</div>
@@ -639,11 +820,13 @@
     const bars = kl.bars || [];
     const activeTier = a.tiers[state.selectedTierKey] || a.recommendedTier;
     const cur = a.currency || "";
+    const dt = a.directTrade || {};
+    const tp = dt.tradePlan || {};
 
     const dates = bars.map((b) => b.t);
     const ohlc = bars.map((b) => [b.o, b.c, b.l, b.h]);
 
-    // Horizontal reference lines for Put Seller
+    // Horizontal reference lines for Put Seller & Direct Stock/Futures Trader
     const markLines = [
       {
         yAxis: activeTier.strike,
@@ -670,6 +853,33 @@
         },
       },
     ];
+
+    if (tp.stopLoss && tp.target2) {
+      markLines.push(
+        {
+          yAxis: tp.stopLoss,
+          name: "直买/做空ATR止损",
+          lineStyle: { color: "#ef4444", width: 1.4, type: "dotted" },
+          label: {
+            formatter: `${dt.direction === "SHORT" ? "做空止损" : "直买止损"} ${cur}${fmtSmart(tp.stopLoss)}`,
+            color: "#fca5a5",
+            backgroundColor: "rgba(8,12,20,0.85)",
+            padding: [2, 5],
+          },
+        },
+        {
+          yAxis: tp.target2,
+          name: "T2波段目标",
+          lineStyle: { color: "#60a5fa", width: 1.4, type: "dashed" },
+          label: {
+            formatter: `T2波段目标 ${cur}${fmtSmart(tp.target2)} (${fmtSignPct(tp.target2Pct, 1)})`,
+            color: "#93c5fd",
+            backgroundColor: "rgba(8,12,20,0.85)",
+            padding: [2, 5],
+          },
+        }
+      );
+    }
 
     if (a.cost) {
       markLines.push({
@@ -700,19 +910,22 @@
       }
     }
 
-    // Compute Y axis min/max so strike and cost lines are always visible on chart
+    // Compute Y axis min/max so strike, cost, and direct trade lines are visible on chart
     const allLow = bars.map((b) => b.l);
     const allHigh = bars.map((b) => b.h);
     const refVals = [activeTier.strike, activeTier.breakeven];
+    if (tp.stopLoss) refVals.push(tp.stopLoss);
+    if (tp.target2 && tp.target2 < a.price * 1.35) refVals.push(tp.target2);
     if (a.cost && a.cost.primaryCost) refVals.push(a.cost.primaryCost);
     if (a.cost && a.cost.cashCost && a.cost.cashCost > a.price * 0.55) refVals.push(a.cost.cashCost);
 
     const minY = Math.min(...allLow, ...refVals) * 0.975;
-    const maxY = Math.max(...allHigh, activeTier.strike * 1.05) * 1.015;
+    const maxY = Math.max(...allHigh, ...refVals, activeTier.strike * 1.05) * 1.015;
 
     el("kline-key-levels").innerHTML = `
       <span class="badge badge-gold">行权价 K=${cur}${fmtSmart(activeTier.strike)}</span>
       <span class="badge badge-neutral">盈亏平衡=${cur}${fmtSmart(activeTier.breakeven)}</span>
+      ${tp.target2 ? `<span class="badge badge-neutral" style="border-color:rgba(59,130,246,0.45);color:#93c5fd;">直买止损=${cur}${fmtSmart(tp.stopLoss)} / T2目标=${cur}${fmtSmart(tp.target2)}</span>` : ""}
       ${a.cost ? `<span class="badge badge-bull">完全成本=${cur}${fmtSmart(a.cost.primaryCost)} / 现金成本=${cur}${fmtSmart(a.cost.cashCost)}</span>` : `<span class="badge badge-bull">布林下轨=${cur}${fmtSmart(a.supports.bollLow)}</span>`}
     `;
 
@@ -849,12 +1062,20 @@
     const expPnl = payoff.expPnl || [];
     const midPnl = payoff.midPnl || [];
     const spreadExpPnl = payoff.spreadExpPnl || [];
+    const underlyingLongPnl = payoff.underlyingLongPnl || [];
+    const underlyingShortPnl = payoff.underlyingShortPnl || [];
+    const isShortDir = a.directTrade && a.directTrade.direction === "SHORT";
+    const directPnl = isShortDir ? underlyingShortPnl : underlyingLongPnl;
+    const directName = isShortDir
+      ? "直接做空期货损益 (Delta=-1)"
+      : `直接做多标的损益 (踏空临界点 ${cur}${fmtSmart(payoff.upsideCrossoverPx || a.price)})`;
     const spreadName = payoff.spreadInfo
       ? `牛市价差损益 (-K1/+K2=${cur}${fmtSmart(payoff.spreadInfo.longStrike)})`
       : "牛市看跌价差损益 (Bull Put Spread)";
 
     const legendData = ["裸卖Put到期损益", `期中理论损益 (T/2=${payoff.midDte}天)`];
     if (spreadExpPnl.length) legendData.push(spreadName);
+    if (directPnl.length) legendData.push(directName);
 
     const seriesArr = [
       {
@@ -892,6 +1113,16 @@
         data: spreadExpPnl,
         showSymbol: false,
         lineStyle: { width: 2.2, type: "dotted", color: "#a855f7" },
+      });
+    }
+
+    if (directPnl.length) {
+      seriesArr.push({
+        name: directName,
+        type: "line",
+        data: directPnl,
+        showSymbol: false,
+        lineStyle: { width: 2.0, type: "dashed", color: "#3b82f6" },
       });
     }
 
@@ -1046,7 +1277,7 @@
       }
       if (state.archetypeFilter !== "all" && !r.archetype.includes(state.archetypeFilter)) return false;
       if (q) {
-        const hay = `${r.symbol} ${r.name} ${r.sector} ${r.exchange} ${r.archetype}`.toLowerCase();
+        const hay = `${r.symbol} ${r.name} ${r.sector} ${r.exchange} ${r.archetype} ${r.directTrade?.actionBadge || ""} ${r.directTrade?.vsPut?.optimalLabel || ""}`.toLowerCase();
         if (!hay.includes(q)) return false;
       }
       return true;
@@ -1061,6 +1292,10 @@
           return r.market;
         case "putScore":
           return r.putScore;
+        case "directScore":
+          return r.directTrade?.directScore || 0;
+        case "optimalVehicle":
+          return r.directTrade?.vsPut?.optimalLabel || "";
         case "price":
           return r.price;
         case "ret1wPct":
@@ -1102,23 +1337,29 @@
     });
 
     if (!rows.length) {
-      tbody.innerHTML = `<tr><td colspan="18" class="empty-cell">无匹配的期权品种，请调整筛选条件</td></tr>`;
+      tbody.innerHTML = `<tr><td colspan="20" class="empty-cell">无匹配的期权/股期品种，请调整筛选条件</td></tr>`;
       return;
     }
 
     tbody.innerHTML = rows
       .map((r, i) => {
         const t = getActiveTier(r);
+        const dt = r.directTrade || {};
+        const vp = dt.vsPut || {};
         const cur = r.currency || "";
         const activeCls = r.id === state.selectedId ? "active-row" : "";
         const badgeCls =
           r.badgeTone === "bull" ? "badge-bull" : r.badgeTone === "gold" ? "badge-gold" : "badge-neutral";
 
+        const dtScore = dt.directScore || 0;
+        const dtCls = dt.direction === "SHORT" ? "bear-txt" : dtScore >= 75 ? "bull-txt" : "cyan-txt";
+        const optVehLbl = vp.optimalLabel || "🛡️ 卖Put收租";
+
         let costCell = "";
         if (r.cost) {
-          const vp = r.cost.vsPrimaryPct;
-          const cls = vp <= 3 ? "bull-txt" : vp >= 35 ? "bear-txt" : "";
-          costCell = `<span class="${cls}" title="完全成本 ${r.cost.primaryCost} / 现金成本 ${r.cost.cashCost}">较成本 ${fmtSignPct(vp, 1)}</span>`;
+          const vpct = r.cost.vsPrimaryPct;
+          const cls = vpct <= 3 ? "bull-txt" : vpct >= 35 ? "bear-txt" : "";
+          costCell = `<span class="${cls}" title="完全成本 ${r.cost.primaryCost} / 现金成本 ${r.cost.cashCost}">较成本 ${fmtSignPct(vpct, 1)}</span>`;
         } else {
           costCell = `<span class="cyan-txt" title="距52周高点回撤">回调 ${fmtSignPct(r.drawdown52wPct, 1)}</span>`;
         }
@@ -1129,6 +1370,8 @@
           <td><strong>${r.name}</strong> <span style="color:var(--text-muted)">${r.symbol}</span></td>
           <td>${r.marketLabel} · <small style="color:var(--text-muted)">${r.sector}</small></td>
           <td class="num"><strong class="gold-txt">${fmtNum(r.putScore, 1)}</strong></td>
+          <td class="num" title="${dt.actionBadge || ""} · R:R=1:${fmtNum(dt.tradePlan?.rrRatioT2, 2)}"><strong class="${dtCls}">${fmtNum(dtScore, 1)}</strong> <small style="color:var(--text-muted)">(${dt.direction === "SHORT" ? "空" : "多"})</small></td>
+          <td title="${vp.decisionReason || ""}"><span class="mini-tag" style="border-color:rgba(59,130,246,0.4);color:#93c5fd;">${optVehLbl}</span></td>
           <td><span class="badge ${badgeCls}">${r.archetype}</span></td>
           <td class="num"><strong>${cur}${fmtSmart(r.price)}</strong></td>
           <td class="num ${colorCls(r.ret1wPct)}">${fmtSignPct(r.ret1wPct, 2)}</td>
@@ -1660,11 +1903,18 @@
             const posPnlSign = p.unrealizedPnl >= 0 ? "+" : "";
             const rSign = p.rMultiple >= 0 ? "+" : "";
             const strat = p.strategyType || p.strategy || "SHORT_PUT";
+            const isDirectPos = ["LONG_STOCK", "LONG_FUTURES", "SHORT_FUTURES"].includes(strat);
             const stratTag =
               strat === "BULL_PUT_SPREAD" || strat === "bull_put_spread"
                 ? `<span class="mini-tag" style="border-color:rgba(168,85,247,0.45);color:#c084fc;">🛡️牛市价差(-${p.strike}/+${p.longStrike})</span>`
                 : strat === "WHEEL_COVERED_CALL"
                 ? `<span class="mini-tag" style="border-color:rgba(56,189,248,0.45);color:#38bdf8;">🔄车轮接货转备兑Call</span>`
+                : strat === "LONG_STOCK"
+                ? `<span class="mini-tag" style="border-color:rgba(16,185,129,0.5);color:#34d399;">📈直接做多正股/ETF</span>`
+                : strat === "LONG_FUTURES"
+                ? `<span class="mini-tag" style="border-color:rgba(59,130,246,0.5);color:#60a5fa;">📈直接做多期货</span>`
+                : strat === "SHORT_FUTURES"
+                ? `<span class="mini-tag" style="border-color:rgba(239,68,68,0.5);color:#f87171;">📉直接做空期货</span>`
                 : `<span class="mini-tag">裸卖Put</span>`;
 
             const sigCode = p.signalCode || p.actionCode || "HOLD_THETA";
@@ -1677,10 +1927,11 @@
             const capPct = p.capturePct ?? p.profitCapturedPct ?? 0;
             const liveDelta = p.currentDelta ?? p.liveDelta ?? 0;
             const liveTheta = p.dailyThetaTotal ?? p.liveThetaDaily ?? 0;
-            const strikeText =
-              p.longStrike && Number(p.longStrike) > 0
-                ? `<strong class="gold-txt">${cur}${fmtSmart(p.strike)}</strong><br/><small style="color:#c084fc;">保护腿 ${cur}${fmtSmart(p.longStrike)}</small>`
-                : `<strong class="gold-txt">${cur}${fmtSmart(p.strike)}</strong>`;
+            const strikeText = isDirectPos
+              ? `<span class="bear-txt" title="ATR硬止损价">止损 ${cur}${fmtSmart(p.strike)}</span><br/><small class="bull-txt">目标 ${cur}${fmtSmart(p.longStrike)}</small>`
+              : p.longStrike && Number(p.longStrike) > 0
+              ? `<strong class="gold-txt">${cur}${fmtSmart(p.strike)}</strong><br/><small style="color:#c084fc;">保护腿 ${cur}${fmtSmart(p.longStrike)}</small>`
+              : `<strong class="gold-txt">${cur}${fmtSmart(p.strike)}</strong>`;
 
             let rollOrWheelBox = `<div style="font-size:11.5px;line-height:1.45;">${p.actionDetail || ""}</div>`;
             if (p.rollPlan && (sigCode === "ROLL_DEFENSE" || sigCode === "HARD_STOP")) {
@@ -1786,19 +2037,45 @@
     const t = (a.tiers && a.tiers[tk]) || a.recommendedTier;
     const lots = parseInt(el("sim-lots")?.value, 10) || 1;
     const isSpread = strategy === "bull_put_spread";
+    const isDirect = strategy === "direct_trade";
+    const dt = a.directTrade || {};
+    const tp = dt.tradePlan || {};
+
+    let strategyType = "SHORT_PUT";
+    let strikeVal = t.strike;
+    let longStrikeVal = null;
+    let entryPremVal = t.premium;
+    let noteTxt = `工作台录入裸卖Put (${t.label})`;
+
+    if (isSpread) {
+      strategyType = "BULL_PUT_SPREAD";
+      longStrikeVal = t.bullPutSpread ? t.bullPutSpread.longStrike : null;
+      entryPremVal = t.bullPutSpread ? t.bullPutSpread.netCredit : t.premium;
+      noteTxt = `工作台录入牛市价差 (${t.label})`;
+    } else if (isDirect) {
+      if (a.market === "us_stk") {
+        strategyType = "LONG_STOCK";
+      } else {
+        strategyType = dt.direction === "SHORT" ? "SHORT_FUTURES" : "LONG_FUTURES";
+      }
+      strikeVal = tp.stopLoss || a.price * 0.94;
+      longStrikeVal = tp.target2 || a.price * 1.1;
+      entryPremVal = a.price;
+      noteTxt = `工作台录入${dt.actionBadge || "直接买卖"} (${dt.setupArchetype || ""})`;
+    }
 
     try {
       const payload = {
         instId: a.id,
-        strategyType: isSpread ? "BULL_PUT_SPREAD" : "SHORT_PUT",
-        strike: t.strike,
-        longStrike: isSpread && t.bullPutSpread ? t.bullPutSpread.longStrike : null,
+        strategyType: strategyType,
+        strike: strikeVal,
+        longStrike: longStrikeVal,
         entrySpot: a.price,
-        entryPremium: isSpread && t.bullPutSpread ? t.bullPutSpread.netCredit : t.premium,
+        entryPremium: entryPremVal,
         ivPct: a.atmIvPct,
         dte: state.dte,
         lots: lots,
-        note: isSpread ? `工作台录入牛市价差 (${t.label})` : `工作台录入裸卖Put (${t.label})`,
+        note: noteTxt,
       };
       const resp = await fetch("/api/portfolio/add", {
         method: "POST",
@@ -2029,6 +2306,14 @@
 
     el("btn-add-spread-to-portfolio")?.addEventListener("click", () => {
       addCurrentToPortfolio("bull_put_spread");
+    });
+
+    el("btn-add-direct-to-portfolio")?.addEventListener("click", () => {
+      addCurrentToPortfolio("direct_trade");
+    });
+
+    el("btn-ws-add-direct")?.addEventListener("click", () => {
+      addCurrentToPortfolio("direct_trade");
     });
 
     el("btn-reset-portfolio")?.addEventListener("click", () => {

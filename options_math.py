@@ -893,6 +893,8 @@ def build_payoff_curve(
     exp_pnl: List[float] = []
     mid_pnl: List[float] = []
     spread_exp_pnl: List[float] = []
+    underlying_long_pnl: List[float] = []
+    underlying_short_pnl: List[float] = []
 
     for i in range(n_pts):
         p = low_p + i * step_p
@@ -906,6 +908,10 @@ def build_payoff_curve(
         long_intrinsic = max(0.0, long_k - p)
         sp_val = (net_credit - intrinsic + long_intrinsic) * mult
         spread_exp_pnl.append(round(sp_val, 1))
+
+        # Direct Long & Direct Short underlying PnL (1 contract = mult units)
+        underlying_long_pnl.append(round((p - spot) * mult, 1))
+        underlying_short_pnl.append(round((spot - p) * mult, 1))
 
         # At T/2: Short Put PnL = (Premium - Put_BSM(p, K, dte/2, iv)) * multiplier
         mid_res = price_put_and_greeks(
@@ -926,6 +932,9 @@ def build_payoff_curve(
         "expPnl": exp_pnl,
         "midPnl": mid_pnl,
         "spreadExpPnl": spread_exp_pnl,
+        "underlyingLongPnl": underlying_long_pnl,
+        "underlyingShortPnl": underlying_short_pnl,
+        "upsideCrossoverPx": round(spot + premium, dp),
         "spreadInfo": spread_info,
         "maxProfit": round(premium * mult, 1),
         "breakeven": round(strike - premium, dp),

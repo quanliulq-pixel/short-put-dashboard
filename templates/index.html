@@ -198,6 +198,102 @@
       </div>
     </section>
 
+    <!-- 第一点五部分：股票/期货直接买卖(做多正股 · 期货双向做多/做空)量化精选 & 「直买 vs 卖Put」对比中心 -->
+    <section class="section-block" id="direct-trade-section" style="border-color:rgba(56,189,248,0.42);">
+      <div class="section-header">
+        <div>
+          <h2>📈 股票/期货直接买卖 (正股做多 · 期货双向做多/做空) 量化精选 & 「直买 vs 卖Put」决策对比</h2>
+          <p class="sub">解决核心实战抉择：何时应该「直接买正股/做多期货」防踏空主升浪？何时应该「顺势做空期货」？何时「卖Put收租」性价比更高？</p>
+        </div>
+        <span class="badge badge-bull" id="dt-banner-badge">基于 2.0×ATR 止损 · 3.8×ATR 波段目标 · 5年同态20日实证回测</span>
+      </div>
+
+      <!-- 6 大核心指标卡 -->
+      <div class="bt-kpi-grid" style="margin-bottom:14px;">
+        <div class="bt-kpi-card bull-border">
+          <span class="bk-lbl">🟢 强力做多信号 (股票/期货)</span>
+          <strong class="bk-val bull-txt" id="dt-strong-long">-- 个</strong>
+          <span class="bk-sub">多头共振/成本底企稳 (评分≥78)</span>
+        </div>
+        <div class="bt-kpi-card bear-border">
+          <span class="bk-lbl">🔴 顺势做空信号 (双向期货)</span>
+          <strong class="bk-val bear-txt" id="dt-short-fut">-- 个</strong>
+          <span class="bk-sub">空头通道/高位超买阻击</span>
+        </div>
+        <div class="bt-kpi-card cyan-border">
+          <span class="bk-lbl">🚀 建议【优先直接买卖】</span>
+          <strong class="bk-val cyan-txt" id="dt-prefer-direct">-- 个</strong>
+          <span class="bk-sub">低IV或主升浪赔率远超卖Put</span>
+        </div>
+        <div class="bt-kpi-card gold-border">
+          <span class="bk-lbl">⚖️ 建议【半仓直买+半仓卖Put】</span>
+          <strong class="bk-val gold-txt" id="dt-hybrid-combo">-- 个</strong>
+          <span class="bk-sub" id="dt-prefer-put-sub">纯卖Put收租占优 -- 个</span>
+        </div>
+        <div class="bt-kpi-card bull-border">
+          <span class="bk-lbl">🎯 全市场平均波段盈亏比</span>
+          <strong class="bk-val bull-txt" id="dt-avg-rr">-- : 1</strong>
+          <span class="bk-sub">T2波段目标 vs 2.0×ATR硬止损</span>
+        </div>
+        <div class="bt-kpi-card gold-border">
+          <span class="bk-lbl">🏆 5年同态20日实证平均胜率</span>
+          <strong class="bk-val gold-txt" id="dt-avg-winrate">--%</strong>
+          <span class="bk-sub">同趋势+同RSI分位历史实盘胜率</span>
+        </div>
+      </div>
+
+      <!-- 三栏：1. 美股与ETF直接做多 Top6 | 2. 国内外期货做多 Top6 | 3. 国内外期货顺势做空 Top6 -->
+      <div class="three-market-grid">
+        <div class="market-column">
+          <div class="market-col-header us-stk-hdr">
+            <div class="m-hdr-left">
+              <span class="m-flag">LONG</span>
+              <div>
+                <h3>美股与ETF · 直接买多(Long)精选</h3>
+                <span class="m-sub">主升回调甜点 / 突破买点 · 防卖Put踏空</span>
+              </div>
+            </div>
+            <span class="count-pill">Top 6</span>
+          </div>
+          <div class="pick-cards" id="dt-picks-us-stk">
+            <div class="skeleton-box">正在计算美股正股做多盈亏比与实证胜率…</div>
+          </div>
+        </div>
+
+        <div class="market-column">
+          <div class="market-col-header cn-fut-hdr">
+            <div class="m-hdr-left">
+              <span class="m-flag">LONG</span>
+              <div>
+                <h3>美期 & 中国期货 · 直接做多精选</h3>
+                <span class="m-sub">贴近产业成本底企稳 + 多头趋势共振</span>
+              </div>
+            </div>
+            <span class="count-pill">Top 6</span>
+          </div>
+          <div class="pick-cards" id="dt-picks-fut-long">
+            <div class="skeleton-box">正在计算国内外期货做多波段目标与止损位…</div>
+          </div>
+        </div>
+
+        <div class="market-column">
+          <div class="market-col-header us-fut-hdr" style="border-left:3px solid #ef4444;">
+            <div class="m-hdr-left">
+              <span class="m-flag" style="background:rgba(239,68,68,0.2);color:#f87171;">SHORT</span>
+              <div>
+                <h3>美期 & 中国期货 · 顺势做空/高空精选</h3>
+                <span class="m-sub">空头阴跌通道顺势做空 / 极高分位超买阻击</span>
+              </div>
+            </div>
+            <span class="count-pill">Top 6</span>
+          </div>
+          <div class="pick-cards" id="dt-picks-fut-short">
+            <div class="skeleton-box">正在扫描期货空头趋势与高位做空机会…</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
     <!-- 第二部分：单品种深度卖Put工作台 (K线成本行权价透视 + 损益模拟器 + 3档方案 + 投研手册) -->
     <section class="section-block workstation-section" id="workstation-section">
       <div class="section-header ws-top-bar">
@@ -225,7 +321,7 @@
             <strong class="val" id="ws-rsi-pct">--</strong>
           </div>
           <div class="ws-px-item">
-            <span class="lbl">卖Put综合评分</span>
+            <span class="lbl">卖Put评分 / 直买评分</span>
             <strong class="val score-highlight" id="ws-score">--</strong>
           </div>
         </div>
@@ -294,6 +390,20 @@
             <div class="tiers-grid" id="tiers-grid"></div>
           </div>
 
+          <!-- 1.5 直接买卖正股/期货量化分析 & 【直买标的 vs 卖Put期权】同台PK决策矩阵 -->
+          <div class="panel" style="border-color:rgba(59,130,246,0.45);">
+            <div class="panel-header">
+              <div>
+                <h3>📈 直接买卖股票/期货 (做多/做空) 量化方案 & 【直买 vs 卖Put】同台PK</h3>
+                <p class="sub" id="ws-dt-sub">ATR动态波段止损 · T1/T2目标盈亏比 · 5年历史同态回测胜率 · 踏空临界点(S+P)精确对决</p>
+              </div>
+              <button type="button" class="btn btn-sm btn-outline" id="btn-ws-add-direct" title="将该品种直接买卖(做多/做空)方案加入实盘持仓跟踪">➕ 将直买/做空方案加入持仓</button>
+            </div>
+            <div class="playbook-box" id="ws-direct-trade-panel">
+              <div class="empty-note">正在计算直接买卖正股/期货量化方案与期权对比矩阵…</div>
+            </div>
+          </div>
+
           <!-- 2. 五维量化评分拆解 + 关键价格阶梯 -->
           <div class="panel">
             <div class="panel-header">
@@ -357,9 +467,10 @@
           <p class="sub">全生命周期期权头寸管理：实时重估希腊字母与浮盈亏，自动触发「65%止盈落袋」「Roll Down & Out 净收权利金展期」「接货转备兑Call」与「-2.5R硬止损警报」</p>
         </div>
         <div style="display:flex;gap:8px;flex-wrap:wrap;">
-          <button type="button" class="btn btn-sm btn-gold" id="btn-add-cur-to-portfolio" title="将上方工作台当前选中的品种与档位一键加入持仓跟踪">➕ 将当前工作台合约加入持仓</button>
+          <button type="button" class="btn btn-sm btn-gold" id="btn-add-cur-to-portfolio" title="将上方工作台当前选中的品种与档位一键加入持仓跟踪">➕ 将当前工作台卖Put加入持仓</button>
           <button type="button" class="btn btn-sm btn-outline" id="btn-add-spread-to-portfolio" title="以牛市看跌价差(Bull Put Spread)模式加入持仓">🛡️ 以牛市价差加入持仓</button>
-          <button type="button" class="btn btn-sm btn-ghost" id="btn-reset-portfolio" title="重置为5笔典型机构实战示例持仓">🔄 恢复机构示例持仓</button>
+          <button type="button" class="btn btn-sm btn-outline" id="btn-add-direct-to-portfolio" title="以股票/期货直接买卖(做多/做空)模式加入持仓">📈 以股/期直接买卖加入持仓</button>
+          <button type="button" class="btn btn-sm btn-ghost" id="btn-reset-portfolio" title="重置为6笔典型机构实战示例持仓(含期权与期货直买)">🔄 恢复机构示例持仓</button>
         </div>
       </div>
 
@@ -491,6 +602,8 @@
               <th data-sort="name">品种 / 代码</th>
               <th data-sort="market">市场 / 交易所</th>
               <th data-sort="putScore" class="num sort-desc">卖Put评分 ▼</th>
+              <th data-sort="directScore" class="num">直买/做空分</th>
+              <th data-sort="optimalVehicle">最优工具 (直买 vs 卖Put)</th>
               <th>策略定性标签</th>
               <th data-sort="price" class="num">最新现价</th>
               <th data-sort="ret1wPct" class="num">近1周%</th>
@@ -508,7 +621,7 @@
             </tr>
           </thead>
           <tbody id="screener-tbody">
-            <tr><td colspan="18" class="empty-cell">正在加载全市场76个期权品种量化数据…</td></tr>
+            <tr><td colspan="20" class="empty-cell">正在加载全市场79个期权与股/期直买量化数据…</td></tr>
           </tbody>
         </table>
       </div>
@@ -675,16 +788,17 @@
     </section>
 
     <footer class="app-footer">
-      <p>量化模型说明（v3.0 全生命周期实战版）：美股采用 BSM 定价并对跨季报窗口做跳空风险折价（Yahoo 真实财报日 + 估算日历双保险）；美期货、中国期货及中金所股指期权（MO/IO/HO）采用 Black-76 模型（b=0）并对主连换月跳空做平滑复权；支持 25-Delta Put 偏度与 7D/30D/60D 期限结构诊断、牛市看跌价差（Bull Put Spread）保护腿自动配对、车轮策略（Wheel Covered Call）接货备兑衔接、实盘/模拟持仓止盈/移仓/硬止损(-2.5R)动态雷达及 52~104 周滚动全样本实证检验。仅供期权量化研究参考，不构成投资建议。</p>
+      <p>量化模型说明（v4.0 期权卖方 + 股期直接买卖双核实战版）：美股采用 BSM 定价并对跨季报窗口做跳空风险折价（Yahoo 真实财报日 + 估算日历双保险）；美期货、中国期货及中金所股指期权（MO/IO/HO）采用 Black-76 模型（b=0）并对主连换月跳空做平滑复权；支持 25-Delta Put 偏度与 7D/30D/60D 期限结构诊断、牛市看跌价差（Bull Put Spread）保护腿自动配对、车轮策略（Wheel Covered Call）接货备兑衔接、直接买卖股票/期货（做多正股/ETF · 双向做多/做空期货 · ATR波段止损 · 踏空临界点 S+P 对决）、实盘/模拟持仓止盈/移仓/硬止损动态雷达及 52~104 周滚动全样本实证检验。仅供量化研究参考，不构成投资建议。</p>
     </footer>
   </div>
 
   <!-- iPhone 手机端底部拇指快捷导航栏 (仅移动端显示) -->
   <nav class="mobile-bottom-nav" id="mobile-bottom-nav">
     <button type="button" data-target="cn-idx-section" class="active">🇨🇳 股指</button>
-    <button type="button" data-target="top-picks-section">🏆 精选</button>
+    <button type="button" data-target="top-picks-section">🏆 卖Put</button>
+    <button type="button" data-target="direct-trade-section">📈 股期直买</button>
     <button type="button" data-target="workstation-section">🔬 工作台</button>
-    <button type="button" data-target="portfolio-section">💼 持仓雷达</button>
+    <button type="button" data-target="portfolio-section">💼 持仓</button>
     <button type="button" data-target="screener-section">📋 全表</button>
     <button type="button" data-target="backtest-section">📊 实证</button>
   </nav>

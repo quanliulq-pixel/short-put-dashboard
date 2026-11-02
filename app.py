@@ -257,16 +257,16 @@ function render() {{
     return `<div class="card">
       <div class="c-top">
         <div><span class="c-name">${{i+1}}. ${{r.name}}</span><span class="c-sym">${{r.symbol}} · ${{r.marketLabel}}</span></div>
-        <span class="c-score">${{Number(r.putScore).toFixed(1)}}分</span>
+        <span class="c-score">Put ${{Number(r.putScore).toFixed(1)}} / 直买 ${{Number(r.directTrade?.directScore||0).toFixed(1)}}</span>
       </div>
-      <div style="font-size:12px;margin-bottom:4px" class="cyan">● ${{r.archetype}} · 1D ${{r.change1dPct>0?"+":""}}${{r.change1dPct}}% / 1W ${{r.ret1wPct>0?"+":""}}${{r.ret1wPct}}%</div>
+      <div style="font-size:12px;margin-bottom:4px" class="cyan">● ${{r.archetype}} · ${{r.directTrade?.vsPut?.optimalLabel||""}} · 1D ${{r.change1dPct>0?"+":""}}${{r.change1dPct}}%</div>
       <div class="grid">
         <div><span class="m-lbl">最新现价 / 趋势</span><span class="m-val">${{cur}}${{r.price}} <small style="font-weight:500;color:var(--muted)">(${{r.trendRegime||""}})</small></span></div>
-        <div><span class="m-lbl">卖Put行权价(${{t.label?.slice(0,2)||"推荐"}})</span><span class="m-val gold">${{cur}}${{t.strike}}</span></div>
-        <div><span class="m-lbl">安全垫 / ATR缓冲</span><span class="m-val bull">${{t.otmPct}}% (${{t.atrBufferMultiple||"--"}}x ATR)</span></div>
-        <div><span class="m-lbl">双轨胜率(实证) / 权利金</span><span class="m-val bull">${{t.popPct}}%(${{t.empiricalPopPct??t.popPct}}%) · ${{cur}}${{t.contractPremium}}</span></div>
-        <div><span class="m-lbl">保证金/现金年化</span><span class="m-val gold">${{t.annReturnMarginPct}}% / ${{t.annReturnCashPct}}%</span></div>
-        <div><span class="m-lbl">IV (${{r.ivSource||"估算IV"}})</span><span class="m-val cyan">${{r.atmIvPct}}% (VRP ${{r.vrpPts>=0?"+":""}}${{r.vrpPts}}%)</span></div>
+        <div><span class="m-lbl">卖Put行权价(${{t.label?.slice(0,2)||"推荐"}})</span><span class="m-val gold">${{cur}}${{t.strike}} (-${{t.otmPct}}%)</span></div>
+        <div><span class="m-lbl">双轨胜率 / 保证金年化</span><span class="m-val bull">${{t.popPct}}% · <span class="gold">${{t.annReturnMarginPct}}%</span></span></div>
+        <div><span class="m-lbl">直买/做空信号</span><span class="m-val cyan">${{r.directTrade?.actionBadge||"--"}}</span></div>
+        <div><span class="m-lbl">直买止损 / T2目标</span><span class="m-val"><span class="bear">${{cur}}${{r.directTrade?.tradePlan?.stopLoss||"--"}}</span> → <span class="bull">${{cur}}${{r.directTrade?.tradePlan?.target2||"--"}}</span></span></div>
+        <div><span class="m-lbl">盈亏比 / 踏空临界点</span><span class="m-val gold">1:${{r.directTrade?.tradePlan?.rrRatioT2||"--"}} (${{cur}}${{r.directTrade?.vsPut?.upsideCrossoverPx||"--"}})</span></div>
       </div>
       ${{r.highCorrPeers && r.highCorrPeers.length ? `<div style="font-size:11px;color:#7dd3fc;background:rgba(56,189,248,0.10);border:1px solid rgba(56,189,248,0.28);border-radius:6px;padding:3px 8px;margin-top:4px;">🔗 60日高相关同向簇(ρ≥0.70): ${{r.highCorrPeers.map(p=>`${{p.name}}(ρ=${{p.corr}})`).join("、")}}</div>` : ""}}
       ${{r.riskNotes && r.riskNotes.length ? `<div style="font-size:11px;color:#fca5a5;background:rgba(239,68,68,0.12);border:1px solid rgba(239,68,68,0.3);border-radius:6px;padding:4px 8px;margin-top:5px;">${{r.riskNotes.join("；")}}</div>` : ""}}
@@ -386,6 +386,10 @@ def api_simulate():
         payoff["midPnl"] = [round(x * lots, 1) for x in payoff["midPnl"]]
         if "spreadExpPnl" in payoff:
             payoff["spreadExpPnl"] = [round(x * lots, 1) for x in payoff["spreadExpPnl"]]
+        if "underlyingLongPnl" in payoff:
+            payoff["underlyingLongPnl"] = [round(x * lots, 1) for x in payoff["underlyingLongPnl"]]
+        if "underlyingShortPnl" in payoff:
+            payoff["underlyingShortPnl"] = [round(x * lots, 1) for x in payoff["underlyingShortPnl"]]
         payoff["maxProfit"] = round(payoff["maxProfit"] * lots, 1)
 
     return jsonify(

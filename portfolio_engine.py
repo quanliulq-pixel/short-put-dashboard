@@ -222,6 +222,15 @@ def _seed_default_positions() -> List[Dict[str, Any]]:
             "origDte": 30,
             "note": "上期所沪金回调均线支撑卖Put稳健收租",
         },
+        {
+            "instId": "CN_FUT:SR0",
+            "strategyType": "LONG_FUTURES",
+            "scenario": "DIRECT_LONG",
+            "lots": 2,
+            "openDaysAgo": 8,
+            "origDte": 25,
+            "note": "郑商所白糖期货直买做多（贴近制糖成本底+多头趋势右侧波段）",
+        },
     ]
 
     recs = get_weekly_recommendations(target_dte=30, force=False)
@@ -251,7 +260,13 @@ def _seed_default_positions() -> List[Dict[str, Any]]:
         open_dt = (today - timedelta(days=s["openDaysAgo"])).strftime("%Y-%m-%d")
         exp_dt = (today + timedelta(days=rem_dte)).strftime("%Y-%m-%d")
 
-        if s["scenario"] == "TAKE_PROFIT":
+        if s["scenario"] == "DIRECT_LONG":
+            # Direct futures/stock long: strike stores Stop-Loss, longStrike stores T2 Target
+            entry_spot = round(spot * 0.978, dp)
+            strike = round_to_step(entry_spot * 0.962, step, dp=dp)   # 2.0x ATR stop-loss
+            long_k = round_to_step(entry_spot * 1.055, step, dp=dp)   # Wave target T2
+            entry_prem = round(entry_spot - strike, max(dp, 2))       # Unit risk 1R
+        elif s["scenario"] == "TAKE_PROFIT":
             # Strike 8.5% below current spot; opened when spot was 4% lower -> ~72% profit captured
             strike = round_to_step(spot * 0.915, step, dp=dp)
             entry_spot = round(spot * 0.96, dp)
@@ -444,106 +459,177 @@ def get_portfolio_tracker(target_dte: int = 30) -> Dict[str, Any]:
         long_strike = float(p["longStrike"]) if p.get("longStrike") else None
         lots = max(1, int(p.get("lots") or 1))
         entry_prem = float(p["entryPremium"])
+        entry_spot_val = float(p.get("entrySpot") or spot)
         strat = str(p.get("strategyType") or "SHORT_PUT")
 
-        strike_iv = skew_adjusted_iv(atm_iv, spot, strike, skew_coeff=skew_coeff)
-        cur_res = price_put_and_greeks(spot, strike, rem_dte, strike_iv, r=r, is_futures=is_fut)
-        cur_prem = cur_res["premium"]
-        cur_delta = cur_res["delta"]
-        cur_theta = cur_res["theta_daily"]
+        is_direct_pos = strat in ("LONG_STOCK", "LONG_FUTURES", "SHORT_FUTURES")
+        if is_direct_pos:
+            # Direct Stock/Futures Position:
+            # `strike` holds the ATR Stop-Loss price, `long_strike` holds the T2 Wave Target price,
+            # `entry_prem` holds 1R unit risk distance (abs(entrySpot - stopLoss)).
+            is_short_dir = strat == "SHORT_FUTURES"
+            unit_pnl = (entry_spot_val - spot) if is_short_dir else (spot - entry_spot_val)
+            unit_risk_1r = max(abs(entry_spot_val - strike), spot * 0.015)
+            target_px = long_strike if (long_strike and long_strike > 0) else (
+                round(entry_spot_val - 2.5 * unit_risk_1r, dp) if is_short_dir else round(entry_spot_val + 2.5 * unit_risk_1r, dp)
+            )
+            target_dist = max(abs(target_px - entry_spot_val), unit_risk_1r)
+            total_pnl = unit_pnl * mult * lots
+            max_profit = target_dist * mult * lots
+            capture_pct = (unit_pnl / target_dist * 100.0) if target_dist > 0 else 0.0
+            r_mult = (unit_pnl / unit_risk_1r) if unit_risk_1r > 0 else 0.0
+            # Distance to stop-loss as cushion %
+            otm_pct = (((strike - spot) / spot) * 100.0) if is_short_dir else (((spot - strike) / spot) * 100.0)
+            cur_prem = spot
+            cur_delta = -1.0 if is_short_dir else 1.0
+            daily_theta_total = 0.0
+            m_rate = 1.0 if inst["market"] == "us_stk" else float(inst.get("margin_rate", 0.12))
+            margin_req = spot * mult * m_rate * lots
+            roll_plan = None
+            wheel_plan = build_wheel_covered_call(
+                inst=inst,
+                spot=spot,
+                assigned_strike=entry_spot_val,
+                put_premium=0.0,
+                atm_iv=atm_iv,
+                dte=30,
+                step=step,
+            )
 
-        if strat == "BULL_PUT_SPREAD" and long_strike and long_strike < strike:
-            long_iv = skew_adjusted_iv(atm_iv, spot, long_strike, skew_coeff=skew_coeff)
-            long_res = price_put_and_greeks(spot, long_strike, rem_dte, long_iv, r=r, is_futures=is_fut)
-            cur_prem = max(0.01, cur_prem - long_res["premium"])
-            cur_delta = cur_delta - long_res["delta"]
-            cur_theta = max(0.0, cur_theta - long_res["theta_daily"])
-            width = max(step, strike - long_strike)
-            margin_req = max(width - entry_prem, entry_prem * 0.5) * mult * lots
+            if r_mult <= -1.0 or otm_pct <= 0.0:
+                signal_code = "HARD_STOP"
+                signal_label = "🔴 触及ATR硬止损位"
+                signal_tone = "bear"
+                stop_loss_count += 1
+                action_detail = (
+                    f"现价 {cur}{spot:g} 已触及/跌破预设 2.0×ATR 止损位 {cur}{strike:g}（浮亏 {r_mult:.2f}R），"
+                    f"建议严格执行趋势止损纪律平仓离场，防范逆势深套。"
+                )
+            elif capture_pct >= 80.0 or r_mult >= 1.8:
+                signal_code = "TAKE_PROFIT"
+                signal_label = "🟢 触及波段目标·分批止盈"
+                signal_tone = "bull"
+                take_profit_count += 1
+                action_detail = (
+                    f"已捕获波段目标的 {capture_pct:.1f}%（盈利 +{r_mult:.2f}R / +{cur}{total_pnl:.0f}），"
+                    f"建议平仓50%~70%锁定利润，余仓将移动止损上移至 {cur}{round((entry_spot_val + spot)/2, dp):g}。"
+                )
+            elif r_mult >= 0.75 and not is_short_dir:
+                signal_code = "WHEEL_CALL"
+                signal_label = "🟣 顺势浮盈·可卖备兑Call增厚"
+                signal_tone = "cyan"
+                wheel_call_count += 1
+                action_detail = (
+                    f"直买多单已浮盈 +{r_mult:.2f}R（+{cur}{total_pnl:.0f}），建议将保护止损上移至成本价 {cur}{entry_spot_val:g}（立于不败之地），"
+                    f"同时可卖出上方 {cur}{wheel_plan['callStrike']:g} 备兑Call 再收 +{cur}{wheel_plan['contractCallPremium'] * lots:g} 权利金！"
+                )
+            else:
+                signal_code = "HOLD_THETA"
+                signal_label = f"🔵 {'空单' if is_short_dir else '多单'}趋势持有中"
+                signal_tone = "neutral"
+                action_detail = (
+                    f"距止损位 {cur}{strike:g} 仍有 {otm_pct:.1f}% 缓冲，波段目标看至 {cur}{target_px:g}，"
+                    f"当前浮盈亏 {r_mult:+.2f}R，顺势持有待波段加速。"
+                )
         else:
-            margin_req = compute_exchange_margin(inst, spot, strike, cur_prem) * lots
+            strike_iv = skew_adjusted_iv(atm_iv, spot, strike, skew_coeff=skew_coeff)
+            cur_res = price_put_and_greeks(spot, strike, rem_dte, strike_iv, r=r, is_futures=is_fut)
+            cur_prem = cur_res["premium"]
+            cur_delta = cur_res["delta"]
+            cur_theta = cur_res["theta_daily"]
 
-        unit_pnl = entry_prem - cur_prem
-        total_pnl = unit_pnl * mult * lots
-        max_profit = entry_prem * mult * lots
-        capture_pct = (unit_pnl / entry_prem * 100.0) if entry_prem > 0 else 0.0
-        r_mult = (unit_pnl / entry_prem) if entry_prem > 0 else 0.0
-        otm_pct = ((spot - strike) / spot * 100.0) if spot > 0 else 0.0
-        daily_theta_total = cur_theta * mult * lots
+            if strat == "BULL_PUT_SPREAD" and long_strike and long_strike < strike:
+                long_iv = skew_adjusted_iv(atm_iv, spot, long_strike, skew_coeff=skew_coeff)
+                long_res = price_put_and_greeks(spot, long_strike, rem_dte, long_iv, r=r, is_futures=is_fut)
+                cur_prem = max(0.01, cur_prem - long_res["premium"])
+                cur_delta = cur_delta - long_res["delta"]
+                cur_theta = max(0.0, cur_theta - long_res["theta_daily"])
+                width = max(step, strike - long_strike)
+                margin_req = max(width - entry_prem, entry_prem * 0.5) * mult * lots
+            else:
+                margin_req = compute_exchange_margin(inst, spot, strike, cur_prem) * lots
 
-        # Roll Down & Out plan + Wheel Covered Call plan
-        roll_plan = solve_roll_down_and_out(
-            inst=inst,
-            spot=spot,
-            current_strike=strike,
-            current_put_price=cur_prem,
-            atm_iv=atm_iv,
-            rem_dte=rem_dte,
-            add_days=30,
-        )
-        wheel_plan = build_wheel_covered_call(
-            inst=inst,
-            spot=spot,
-            assigned_strike=strike,
-            put_premium=entry_prem,
-            atm_iv=atm_iv,
-            dte=30,
-            step=step,
-        )
+            unit_pnl = entry_prem - cur_prem
+            total_pnl = unit_pnl * mult * lots
+            max_profit = entry_prem * mult * lots
+            capture_pct = (unit_pnl / entry_prem * 100.0) if entry_prem > 0 else 0.0
+            r_mult = (unit_pnl / entry_prem) if entry_prem > 0 else 0.0
+            otm_pct = ((spot - strike) / spot * 100.0) if spot > 0 else 0.0
+            daily_theta_total = cur_theta * mult * lots
 
-        # Action Signal Decision Tree
-        if strat == "WHEEL_COVERED_CALL":
-            signal_code = "WHEEL_CALL"
-            signal_label = "🟣 车轮备兑Call收租"
-            signal_tone = "cyan"
-            wheel_call_count += 1
-            action_detail = (
-                f"已按 {cur}{strike:g} 接货（净成本 {cur}{wheel_plan['initialCostBasis']:g}），"
-                f"建议卖出30天 {cur}{wheel_plan['callStrike']:g} 备兑Call（Δ={wheel_plan['callDelta']:.2f}），"
-                f"再收权利金 +{cur}{wheel_plan['contractCallPremium'] * lots:g}（年化 +{wheel_plan['callAnnReturnPct']:.1f}%），"
-                f"持仓成本降至 {cur}{wheel_plan['newCostBasis']:g}。"
+            # Roll Down & Out plan + Wheel Covered Call plan
+            roll_plan = solve_roll_down_and_out(
+                inst=inst,
+                spot=spot,
+                current_strike=strike,
+                current_put_price=cur_prem,
+                atm_iv=atm_iv,
+                rem_dte=rem_dte,
+                add_days=30,
             )
-        elif r_mult <= -2.50:
-            signal_code = "HARD_STOP"
-            signal_label = "🔴 触及-2.5R硬止损线"
-            signal_tone = "bear"
-            stop_loss_count += 1
-            action_detail = (
-                f"当前浮亏达 {r_mult:.2f}R（已击穿 -2.50R 机构硬止损纪律线），"
-                f"建议立即平仓截断尾部穿仓风险，或降仓展期至下月 {cur}{roll_plan['newStrike']:g}。"
+            wheel_plan = build_wheel_covered_call(
+                inst=inst,
+                spot=spot,
+                assigned_strike=strike,
+                put_premium=entry_prem,
+                atm_iv=atm_iv,
+                dte=30,
+                step=step,
             )
-        elif otm_pct <= 1.2 or abs(cur_delta) >= 0.36 or r_mult <= -0.85:
-            signal_code = "ROLL_DEFENSE"
-            signal_label = "🟡 防御移仓 (Roll Down & Out)"
-            signal_tone = "gold"
-            roll_defense_count += 1
-            roll_credit_str = (
-                f"净收权利金 +{cur}{abs(roll_plan['contractNetRollCredit']) * lots:g}"
-                if roll_plan["isNetCredit"]
-                else f"微付净成本 -{cur}{abs(roll_plan['contractNetRollCredit']) * lots:g}"
-            )
-            action_detail = (
-                f"现价逼近行权价（安全垫仅剩 {otm_pct:.1f}%，Delta {cur_delta:.2f}）。"
-                f"建议平当前仓并向下展期至 {roll_plan['newDte']}天 {cur}{roll_plan['newStrike']:g} Put（下移 {roll_plan['strikeDropPct']:.1f}%），"
-                f"可实现【{roll_credit_str}】，新安全垫扩至 {roll_plan['newOtmPct']:.1f}%！"
-            )
-        elif capture_pct >= 65.0 or (capture_pct >= 50.0 and rem_dte >= 14):
-            signal_code = "TAKE_PROFIT"
-            signal_label = "🟢 止盈落袋 (已赚65%+)"
-            signal_tone = "bull"
-            take_profit_count += 1
-            action_detail = (
-                f"权利金已衰减 {capture_pct:.1f}%（浮盈 +{cur}{total_pnl:.0f}），剩余 {rem_dte}天仅剩残余价值 {cur}{cur_prem:g}。"
-                f"建议立即买平止盈，释放 {cur}{margin_req:.0f} 保证金换仓至新甜点标的！"
-            )
-        else:
-            signal_code = "HOLD_THETA"
-            signal_label = "🔵 安心持有收Theta"
-            signal_tone = "neutral"
-            action_detail = (
-                f"虚值安全垫 {otm_pct:.1f}% 稳固（Delta {cur_delta:.2f}），"
-                f"每日躺赚时间价值 +{cur}{daily_theta_total:.1f}/天；达到 65%~70% 衰减时自动提示止盈。"
-            )
+
+            # Action Signal Decision Tree
+            if strat == "WHEEL_COVERED_CALL":
+                signal_code = "WHEEL_CALL"
+                signal_label = "🟣 车轮备兑Call收租"
+                signal_tone = "cyan"
+                wheel_call_count += 1
+                action_detail = (
+                    f"已按 {cur}{strike:g} 接货（净成本 {cur}{wheel_plan['initialCostBasis']:g}），"
+                    f"建议卖出30天 {cur}{wheel_plan['callStrike']:g} 备兑Call（Δ={wheel_plan['callDelta']:.2f}），"
+                    f"再收权利金 +{cur}{wheel_plan['contractCallPremium'] * lots:g}（年化 +{wheel_plan['callAnnReturnPct']:.1f}%），"
+                    f"持仓成本降至 {cur}{wheel_plan['newCostBasis']:g}。"
+                )
+            elif r_mult <= -2.50:
+                signal_code = "HARD_STOP"
+                signal_label = "🔴 触及-2.5R硬止损线"
+                signal_tone = "bear"
+                stop_loss_count += 1
+                action_detail = (
+                    f"当前浮亏达 {r_mult:.2f}R（已击穿 -2.50R 机构硬止损纪律线），"
+                    f"建议立即平仓截断尾部穿仓风险，或降仓展期至下月 {cur}{roll_plan['newStrike']:g}。"
+                )
+            elif otm_pct <= 1.2 or abs(cur_delta) >= 0.36 or r_mult <= -0.85:
+                signal_code = "ROLL_DEFENSE"
+                signal_label = "🟡 防御移仓 (Roll Down & Out)"
+                signal_tone = "gold"
+                roll_defense_count += 1
+                roll_credit_str = (
+                    f"净收权利金 +{cur}{abs(roll_plan['contractNetRollCredit']) * lots:g}"
+                    if roll_plan["isNetCredit"]
+                    else f"微付净成本 -{cur}{abs(roll_plan['contractNetRollCredit']) * lots:g}"
+                )
+                action_detail = (
+                    f"现价逼近行权价（安全垫仅剩 {otm_pct:.1f}%，Delta {cur_delta:.2f}）。"
+                    f"建议平当前仓并向下展期至 {roll_plan['newDte']}天 {cur}{roll_plan['newStrike']:g} Put（下移 {roll_plan['strikeDropPct']:.1f}%），"
+                    f"可实现【{roll_credit_str}】，新安全垫扩至 {roll_plan['newOtmPct']:.1f}%！"
+                )
+            elif capture_pct >= 65.0 or (capture_pct >= 50.0 and rem_dte >= 14):
+                signal_code = "TAKE_PROFIT"
+                signal_label = "🟢 止盈落袋 (已赚65%+)"
+                signal_tone = "bull"
+                take_profit_count += 1
+                action_detail = (
+                    f"权利金已衰减 {capture_pct:.1f}%（浮盈 +{cur}{total_pnl:.0f}），剩余 {rem_dte}天仅剩残余价值 {cur}{cur_prem:g}。"
+                    f"建议立即买平止盈，释放 {cur}{margin_req:.0f} 保证金换仓至新甜点标的！"
+                )
+            else:
+                signal_code = "HOLD_THETA"
+                signal_label = "🔵 安心持有收Theta"
+                signal_tone = "neutral"
+                action_detail = (
+                    f"虚值安全垫 {otm_pct:.1f}% 稳固（Delta {cur_delta:.2f}），"
+                    f"每日躺赚时间价值 +{cur}{daily_theta_total:.1f}/天；达到 65%~70% 衰减时自动提示止盈。"
+                )
 
         cny_mult = fx_rate if cur == "$" else (fx_rate * 0.01 if cur == "¢" else 1.0)
         total_theta_cny += daily_theta_total * cny_mult
@@ -628,7 +714,23 @@ def generate_daily_briefing(target_dte: int = 30) -> Dict[str, Any]:
         )
 
     lines.append("")
-    lines.append("📡 【二、持仓动态雷达 (止盈 / 移仓 / 备兑Call / 硬止损)】")
+    lines.append("📈 【二、股票/期货直接买卖(做多/做空)量化精选 & 期权对比】")
+    dt_picks = recs.get("directTopPicks") or {}
+    direct_samples = (dt_picks.get("usStkLong") or [])[:2] + (dt_picks.get("futLong") or [])[:2] + (dt_picks.get("futShort") or [])[:1]
+    for j, r in enumerate(direct_samples, 1):
+        dt = r.get("directTrade") or {}
+        tp = dt.get("tradePlan") or {}
+        vp = dt.get("vsPut") or {}
+        cur = r.get("currency", "")
+        lines.append(
+            f"{j}. {dt.get('signalBadge','')} | {r['name']}({r['symbol']}) [{dt.get('directScore',0):.1f}分]："
+            f"现价 {cur}{r['price']:g} → 止损 {cur}{tp.get('stopLoss',0):g}(-{tp.get('stopLossPct',0):.1f}%) / "
+            f"波段目标 {cur}{tp.get('target2',0):g}(+{tp.get('target2Pct',0):.1f}% · 盈亏比 {tp.get('rrRatioT2',0)}:1) | "
+            f"{vp.get('optimalLabel','')}"
+        )
+
+    lines.append("")
+    lines.append("📡 【三、持仓动态雷达 (止盈 / 移仓 / 备兑Call / 硬止损)】")
     pos_list = tracker.get("positions") or []
     action_pos = [p for p in pos_list if p.get("signalCode") != "HOLD_THETA"] or pos_list[:3]
     for p in action_pos:
@@ -639,7 +741,7 @@ def generate_daily_briefing(target_dte: int = 30) -> Dict[str, Any]:
         )
 
     lines.append("")
-    lines.append("🛡️ 【三、近期宏观事件与长假提保日历护盾】")
+    lines.append("🛡️ 【四、近期宏观事件与长假提保日历护盾】")
     for ev in (shield.get("events") or [])[:4]:
         flag = "🔴" if ev["riskLevel"] == "HIGH" else "🟡"
         lines.append(f"{flag} {ev['monthDay']} ({ev['daysText']}) {ev['title']} [{ev['markets']}]")
