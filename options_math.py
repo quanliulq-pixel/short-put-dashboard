@@ -173,6 +173,385 @@ def price_put_and_greeks(
     }
 
 
+def price_call_and_greeks(
+    spot: float,
+    strike: float,
+    dte: int,
+    iv: float,
+    r: float = 0.04,
+    is_futures: bool = False,
+    basis_drift: float = 0.0,
+) -> Dict[str, float]:
+    """
+    Calculate Call option price, Delta, Gamma, Theta (per calendar day), Vega (per 1% IV),
+    and probability of expiring OTM for Covered Call (Wheel Strategy Phase 2).
+    """
+    T = max(int(dte), 1) / 365.0
+    sigma = max(float(iv), 0.04)
+    sqrt_T = math.sqrt(T)
+    vol_sqrt_T = sigma * sqrt_T
+    b = basis_drift if is_futures else r
+
+    d1 = (math.log(spot / strike) + (b + 0.5 * sigma * sigma) * T) / vol_sqrt_T
+    d2 = d1 - vol_sqrt_T
+
+    df_r = math.exp(-r * T)
+    df_b = math.exp((b - r) * T)
+
+    call_price = spot * df_b * _norm_cdf(d1) - strike * df_r * _norm_cdf(d2)
+    call_price = max(call_price, spot * 0.0002)
+
+    delta = df_b * _norm_cdf(d1)
+    gamma = (df_b * _norm_pdf(d1)) / (spot * vol_sqrt_T)
+    vega = spot * df_b * _norm_pdf(d1) * sqrt_T * 0.01
+
+    term1 = -(spot * df_b * _norm_pdf(d1) * sigma) / (2.0 * sqrt_T)
+    if is_futures:
+        theta_annual = term1 - r * strike * df_r * _norm_cdf(d2) + r * spot * df_b * _norm_cdf(d1)
+    else:
+        theta_annual = term1 - r * strike * df_r * _norm_cdf(d2)
+    theta_daily = abs(theta_annual / 365.0)
+
+    prob_otm_pct = _norm_cdf(-d2) * 100.0
+    return {
+        "premium": call_price,
+        "delta": delta,
+        "gamma": gamma,
+        "theta_daily": theta_daily,
+        "vega": vega,
+        "prob_otm_pct": prob_otm_pct,
+        "prob_called_pct": 100.0 - prob_otm_pct,
+    }
+
+
+def build_bull_put_spread(
+    inst: Dict[str, Any],
+    spot: float,
+    short_strike: float,
+    short_prem: float,
+    short_delta: float,
+    atm_iv: float,
+    dte: int,
+    naked_margin_req: float,
+    step: float,
+) -> Dict[str, Any]:
+    """
+    Pair a Short Put (K_short) with a protective Long Put (K_long < K_short, target Delta ~ -0.06 to -0.08)
+    to form a defined-risk Bull Put Credit Spread.
+    """
+    market = inst["market"]
+    sym = inst["symbol"]
+    is_futures = market in ("us_fut", "cn_fut")
+    r = 0.020 if market == "cn_fut" else 0.042
+    basis_drift = _CFFEX_BASIS_DRIFT.get(sym, 0.0)
+    fat_tail = _FAT_TAIL_FACTOR.get(sym, 0.16 if market == "cn_fut" else 0.12)
+    dp = int(inst.get("dp", 2))
+    mult = float(inst.get("multiplier", 100))
+    skew_coeff = float(inst.get("iv_skew", 0.12))
+
+    # Solve protective long leg around Delta = min(0.07, abs(short_delta) * 0.32)
+    target_long_delta = max(0.04, min(0.09, abs(short_delta) * 0.32))
+    raw_long_k = solve_strike_for_delta(
+        spot,
+        target_long_delta,
+        dte,
+        atm_iv,
+        r=r,
+        is_futures=is_futures,
+        basis_drift=basis_drift,
+        fat_tail=fat_tail,
+    )
+    long_k = round_to_step(raw_long_k, step, dp=dp)
+    # Ensure width is at least 2 strike steps and ~3.5% to 8% of spot
+    min_width = max(step * 2.0, spot * 0.035)
+    if short_strike - long_k < min_width:
+        long_k = round_to_step(short_strike - min_width, step, dp=dp)
+    long_k = max(step, long_k)
+
+    long_iv = skew_adjusted_iv(atm_iv, spot, long_k, skew_coeff=skew_coeff, fat_tail=fat_tail)
+    long_res = price_put_and_greeks(
+        spot,
+        long_k,
+        dte,
+        long_iv,
+        r=r,
+        is_futures=is_futures,
+        basis_drift=basis_drift,
+        fat_tail=fat_tail,
+    )
+    long_prem = min(long_res["premium"], short_prem * 0.65)
+    net_credit = max(short_prem - long_prem, short_prem * 0.25)
+    width = max(short_strike - long_k, step)
+    max_loss_unit = max(width - net_credit, net_credit * 0.5)
+
+    contract_credit = net_credit * mult
+    contract_max_loss = max_loss_unit * mult
+    spread_margin = contract_max_loss  # Exchange/Reg-T defined-risk credit spread margin = max loss
+    margin_saved_pct = (
+        max(0.0, (1.0 - spread_margin / naked_margin_req) * 100.0) if naked_margin_req > 0 else 0.0
+    )
+    roc_spread = (contract_credit / spread_margin * 100.0) if spread_margin > 0 else 0.0
+    ann_roc_spread = roc_spread * (365.0 / max(int(dte), 1))
+    credit_retention_pct = (net_credit / short_prem * 100.0) if short_prem > 0 else 100.0
+    spread_be = short_strike - net_credit
+
+    return {
+        "shortStrike": round(short_strike, dp),
+        "longStrike": round(long_k, dp),
+        "spreadWidth": round(width, dp),
+        "shortPremium": round(short_prem, max(dp, 2)),
+        "longPremium": round(long_prem, max(dp, 2)),
+        "netCredit": round(net_credit, max(dp, 2)),
+        "contractNetCredit": round(contract_credit, 0 if contract_credit >= 100 else 2),
+        "maxLoss": round(contract_max_loss, 0 if contract_max_loss >= 100 else 2),
+        "spreadMarginReq": round(spread_margin, 0),
+        "marginSavedPct": round(margin_saved_pct, 1),
+        "creditRetentionPct": round(credit_retention_pct, 1),
+        "breakeven": round(spread_be, dp),
+        "rocSpreadPct": round(roc_spread, 2),
+        "annReturnSpreadPct": round(ann_roc_spread, 1),
+        "netDelta": round(short_delta - long_res["delta"], 3),
+        "longDelta": round(long_res["delta"], 3),
+        "longIvPct": round(long_iv * 100.0, 1),
+    }
+
+
+def build_wheel_covered_call(
+    inst: Dict[str, Any],
+    spot: float,
+    assigned_strike: float,
+    put_premium: float,
+    atm_iv: float,
+    dte: int,
+    step: float,
+) -> Dict[str, Any]:
+    """
+    Calculate Phase 2 of 'The Wheel Strategy' (车轮策略接货后备兑看涨期权 Covered Call):
+    Assuming assignment at `assigned_strike` (effective cost basis = assigned_strike - put_premium),
+    recommend selling an OTM Call at >= assigned_strike (~0.25-0.30 Call Delta) for 30 DTE.
+    """
+    market = inst["market"]
+    sym = inst["symbol"]
+    is_futures = market in ("us_fut", "cn_fut")
+    r = 0.020 if market == "cn_fut" else 0.042
+    basis_drift = _CFFEX_BASIS_DRIFT.get(sym, 0.0)
+    dp = int(inst.get("dp", 2))
+    mult = float(inst.get("multiplier", 100))
+
+    cost_basis = max(assigned_strike - put_premium, assigned_strike * 0.7)
+    # If assigned, spot is around assigned_strike; target call strike is at least assigned_strike (no locked-in loss)
+    ref_spot = min(spot, assigned_strike)
+    call_dte = max(int(dte), 30)
+    raw_call_k = max(assigned_strike, round_to_step(ref_spot * (1.0 + 0.35 * atm_iv * math.sqrt(call_dte / 365.0)), step, dp=dp))
+    if raw_call_k <= ref_spot:
+        raw_call_k = round_to_step(ref_spot + step, step, dp=dp)
+
+    call_iv = max(0.06, atm_iv * 0.96)  # OTM call typically trades slightly below ATM vol on equities
+    call_res = price_call_and_greeks(
+        ref_spot,
+        raw_call_k,
+        call_dte,
+        call_iv,
+        r=r,
+        is_futures=is_futures,
+        basis_drift=basis_drift,
+    )
+    call_prem = call_res["premium"]
+    contract_call_prem = call_prem * mult
+    new_cost_basis = max(cost_basis - call_prem, cost_basis * 0.5)
+    call_ann_yield = (call_prem / assigned_strike) * (365.0 / call_dte) * 100.0 if assigned_strike > 0 else 0.0
+    total_wheel_prem = put_premium + call_prem
+    wheel_ann_yield = (total_wheel_prem / assigned_strike) * (365.0 / (call_dte * 2.0)) * 100.0 if assigned_strike > 0 else 0.0
+    upside_if_called_pct = ((raw_call_k - cost_basis + call_prem) / cost_basis * 100.0) if cost_basis > 0 else 0.0
+
+    return {
+        "assignedStrike": round(assigned_strike, dp),
+        "initialCostBasis": round(cost_basis, dp),
+        "callStrike": round(raw_call_k, dp),
+        "callDte": call_dte,
+        "callDelta": round(call_res["delta"], 2),
+        "callPremium": round(call_prem, max(dp, 2)),
+        "contractCallPremium": round(contract_call_prem, 0 if contract_call_prem >= 100 else 2),
+        "newCostBasis": round(new_cost_basis, dp),
+        "costReductionPct": round(((assigned_strike - new_cost_basis) / assigned_strike) * 100.0, 2) if assigned_strike > 0 else 0.0,
+        "callAnnReturnPct": round(call_ann_yield, 1),
+        "wheelCycleAnnPct": round(wheel_ann_yield, 1),
+        "upsideIfCalledPct": round(upside_if_called_pct, 2),
+        "probCalledPct": round(call_res["prob_called_pct"], 1),
+    }
+
+
+def compute_vol_skew_and_term(
+    inst: Dict[str, Any],
+    spot: float,
+    atm_iv: float,
+    hv20: float,
+    hv60: float,
+    hv_med_1y: float,
+    dte: int = 30,
+    earnings_in_window: bool = False,
+) -> Dict[str, Any]:
+    """
+    Compute 25-Delta Put Skew (Put Smirk), 25-Delta Risk Reversal, and 7D / 30D / 60D IV Term Structure.
+    """
+    market = inst["market"]
+    sym = inst["symbol"]
+    is_futures = market in ("us_fut", "cn_fut")
+    r = 0.020 if market == "cn_fut" else 0.042
+    basis_drift = _CFFEX_BASIS_DRIFT.get(sym, 0.0)
+    fat_tail = _FAT_TAIL_FACTOR.get(sym, 0.16 if market == "cn_fut" else 0.12)
+    skew_coeff = float(inst.get("iv_skew", 0.12))
+
+    k_25p = solve_strike_for_delta(spot, 0.25, dte, atm_iv, r=r, is_futures=is_futures, basis_drift=basis_drift, fat_tail=fat_tail)
+    iv_25p = skew_adjusted_iv(atm_iv, spot, k_25p, skew_coeff=skew_coeff, fat_tail=fat_tail)
+    # 25-Delta OTM Call IV (equities/indices exhibit downside put skew; gold/commodities can have mild call skew)
+    is_upside_skew_asset = inst.get("sector") in ("贵金属", "有色金属", "新能源") or sym in ("GLD", "GC=F", "SI=F", "AU0", "AG0", "IBIT")
+    iv_25c = atm_iv * (1.015 if is_upside_skew_asset else max(0.88, 1.0 - skew_coeff * 0.42))
+
+    atm_iv_pct = round(atm_iv * 100.0, 1)
+    put_25d_pct = round(iv_25p * 100.0, 1)
+    call_25d_pct = round(iv_25c * 100.0, 1)
+    skew_25d_pts = round(put_25d_pct - atm_iv_pct, 1)
+    rr_25d_pts = round(put_25d_pct - call_25d_pct, 1)
+
+    if skew_25d_pts >= 3.2:
+        skew_label = "陡峭恐慌偏度 (尾部Put溢价极肥·宜卖虚值Put或牛市价差)"
+        skew_tone = "bull"
+    elif skew_25d_pts >= 1.5:
+        skew_label = "标准左偏微笑 (机构常态虚值保护溢价)"
+        skew_tone = "gold"
+    else:
+        skew_label = "偏度温和/平坦 (虚值与平值隐波接近)"
+        skew_tone = "neutral"
+
+    # Term structure across 7D, 30D, 60D, 90D
+    anchor_long = max(0.08, 0.55 * atm_iv + 0.45 * max(hv60, hv_med_1y) * 1.12)
+    if earnings_in_window or hv20 > atm_iv * 1.08:
+        iv_7d = atm_iv * (1.12 if earnings_in_window else 1.05)
+        iv_14d = atm_iv * (1.06 if earnings_in_window else 1.02)
+    else:
+        iv_7d = max(0.06, 0.65 * atm_iv + 0.35 * hv20)
+        iv_14d = max(0.06, 0.82 * atm_iv + 0.18 * hv20)
+    iv_30d = atm_iv
+    iv_60d = 0.65 * atm_iv + 0.35 * anchor_long
+    iv_90d = 0.45 * atm_iv + 0.55 * anchor_long
+
+    iv_7d_pct = round(iv_7d * 100.0, 1)
+    iv_14d_pct = round(iv_14d * 100.0, 1)
+    iv_30d_pct = round(iv_30d * 100.0, 1)
+    iv_60d_pct = round(iv_60d * 100.0, 1)
+    iv_90d_pct = round(iv_90d * 100.0, 1)
+    term_slope_pts = round(iv_60d_pct - iv_7d_pct, 1)
+
+    if term_slope_pts <= -1.5:
+        term_label = "⚠️ 近高远低倒挂 (Backwardation · 短期事件/跳空风险高)"
+        term_tone = "bear"
+    elif term_slope_pts >= 1.0:
+        term_label = "🟢 远月正常升水 (Contango · 30~45天Theta衰减甜点)"
+        term_tone = "bull"
+    else:
+        term_label = "🟡 期限结构平坦 (近远月隐波持平)"
+        term_tone = "gold"
+
+    return {
+        "atmIvPct": atm_iv_pct,
+        "put25dIvPct": put_25d_pct,
+        "call25dIvPct": call_25d_pct,
+        "skew25dPts": skew_25d_pts,
+        "riskReversal25dPts": rr_25d_pts,
+        "skewLabel": skew_label,
+        "skewTone": skew_tone,
+        "iv7dPct": iv_7d_pct,
+        "iv14dPct": iv_14d_pct,
+        "iv30dPct": iv_30d_pct,
+        "iv60dPct": iv_60d_pct,
+        "iv90dPct": iv_90d_pct,
+        "termSlopePts": term_slope_pts,
+        "termLabel": term_label,
+        "termTone": term_tone,
+    }
+
+
+def solve_roll_down_and_out(
+    inst: Dict[str, Any],
+    spot: float,
+    current_strike: float,
+    current_put_price: float,
+    atm_iv: float,
+    rem_dte: int,
+    add_days: int = 30,
+) -> Dict[str, Any]:
+    """
+    Defensive Roll Down & Out calculator:
+    Given a tested Short Put at `current_strike` (buy-to-close cost = `current_put_price`),
+    search for a lower strike `new_strike < current_strike` at `new_dte = max(rem_dte, 5) + add_days`
+    that achieves a Net Credit (or minimal debit) while lowering the strike & breakeven.
+    """
+    market = inst["market"]
+    sym = inst["symbol"]
+    is_futures = market in ("us_fut", "cn_fut")
+    r = 0.020 if market == "cn_fut" else 0.042
+    basis_drift = _CFFEX_BASIS_DRIFT.get(sym, 0.0)
+    fat_tail = _FAT_TAIL_FACTOR.get(sym, 0.16 if market == "cn_fut" else 0.12)
+    dp = int(inst.get("dp", 2))
+    mult = float(inst.get("multiplier", 100))
+    skew_coeff = float(inst.get("iv_skew", 0.12))
+    step = dynamic_strike_step(spot, float(inst.get("strike_step", 1.0)), dp=dp)
+
+    new_dte = max(int(rem_dte), 3) + int(add_days)
+    best_plan: Optional[Dict[str, Any]] = None
+
+    # Candidate strikes from 1 step to 6 steps below current_strike
+    for n_steps in range(1, 7):
+        cand_k = round_to_step(current_strike - n_steps * step, step, dp=dp)
+        if cand_k <= spot * 0.65:
+            break
+        cand_iv = skew_adjusted_iv(atm_iv, spot, cand_k, skew_coeff=skew_coeff, fat_tail=fat_tail)
+        res = price_put_and_greeks(
+            spot,
+            cand_k,
+            new_dte,
+            cand_iv,
+            r=r,
+            is_futures=is_futures,
+            basis_drift=basis_drift,
+            fat_tail=fat_tail,
+        )
+        new_prem = res["premium"]
+        net_roll_credit = new_prem - current_put_price
+        plan = {
+            "newStrike": round(cand_k, dp),
+            "strikeDropPct": round(((current_strike - cand_k) / current_strike) * 100.0, 2) if current_strike > 0 else 0.0,
+            "newDte": new_dte,
+            "closeCost": round(current_put_price, max(dp, 2)),
+            "newPremium": round(new_prem, max(dp, 2)),
+            "netRollCredit": round(net_roll_credit, max(dp, 2)),
+            "contractNetRollCredit": round(net_roll_credit * mult, 1),
+            "isNetCredit": net_roll_credit >= 0.0,
+            "newDelta": round(res["delta"], 3),
+            "newBreakeven": round(cand_k - max(0.0, new_prem - current_put_price), dp),
+            "newOtmPct": round(((spot - cand_k) / spot) * 100.0, 2) if spot > 0 else 0.0,
+        }
+        if net_roll_credit >= 0.0:
+            best_plan = plan
+        elif best_plan is None:
+            best_plan = plan
+
+    return best_plan or {
+        "newStrike": round(current_strike - step, dp),
+        "strikeDropPct": 1.5,
+        "newDte": new_dte,
+        "closeCost": round(current_put_price, max(dp, 2)),
+        "newPremium": round(current_put_price, max(dp, 2)),
+        "netRollCredit": 0.0,
+        "contractNetRollCredit": 0.0,
+        "isNetCredit": True,
+        "newDelta": -0.25,
+        "newBreakeven": round(current_strike - step, dp),
+        "newOtmPct": 3.0,
+    }
+
+
 def solve_strike_for_delta(
     spot: float,
     target_abs_delta: float,
@@ -403,6 +782,27 @@ def build_put_tiers(
         # and 5-year bull-market survivorship bias!
         effective_pop = round(min(bsm_pop, emp_pop), 1)
 
+        spread_obj = build_bull_put_spread(
+            inst=inst,
+            spot=spot,
+            short_strike=k,
+            short_prem=prem,
+            short_delta=res["delta"],
+            atm_iv=atm_iv,
+            dte=dte,
+            naked_margin_req=margin_req,
+            step=step,
+        )
+        wheel_obj = build_wheel_covered_call(
+            inst=inst,
+            spot=spot,
+            assigned_strike=k,
+            put_premium=prem,
+            atm_iv=atm_iv,
+            dte=dte,
+            step=step,
+        )
+
         out[key] = {
             "tier": key,
             "label": label,
@@ -435,6 +835,8 @@ def build_put_tiers(
             "rocCashPct": round(roc_cash, 2),
             "annReturnCashPct": round(ann_cash, 1),
             "anchorTags": anchor_tags,
+            "bullPutSpread": spread_obj,
+            "wheelCoveredCall": wheel_obj,
         }
 
     return out
@@ -449,7 +851,8 @@ def build_payoff_curve(
     premium: float,
 ) -> Dict[str, Any]:
     """
-    Build expiration PnL and T/2 mid-term theoretical PnL curve for 1 short put contract.
+    Build expiration PnL, T/2 mid-term theoretical PnL, and paired Bull Put Credit Spread PnL curve
+    for 1 contract.
     """
     market = inst["market"]
     sym = inst["symbol"]
@@ -459,8 +862,28 @@ def build_payoff_curve(
     fat_tail = _FAT_TAIL_FACTOR.get(sym, 0.16 if market == "cn_fut" else 0.12)
     dp = int(inst.get("dp", 2))
     mult = float(inst.get("multiplier", 100))
+    step = dynamic_strike_step(spot, float(inst.get("strike_step", 1.0)), dp=dp)
+    margin_rate = float(inst.get("margin_rate", 0.15))
+    otm_amt = max(0.0, spot - strike)
+    eff_margin_rate = margin_rate * 1.25
+    unit_margin = premium + max(eff_margin_rate * spot - 0.5 * otm_amt, 0.70 * eff_margin_rate * spot)
+    naked_margin = max(unit_margin * mult, strike * mult * 0.08)
 
-    low_p = min(spot * 0.78, strike * 0.86)
+    spread_info = build_bull_put_spread(
+        inst=inst,
+        spot=spot,
+        short_strike=strike,
+        short_prem=premium,
+        short_delta=-0.24,
+        atm_iv=iv,
+        dte=dte,
+        naked_margin_req=naked_margin,
+        step=step,
+    )
+    long_k = float(spread_info["longStrike"])
+    net_credit = float(spread_info["netCredit"])
+
+    low_p = min(spot * 0.78, strike * 0.86, long_k * 0.94)
     high_p = max(spot * 1.12, strike * 1.16)
     n_pts = 65
     step_p = (high_p - low_p) / (n_pts - 1)
@@ -469,6 +892,7 @@ def build_payoff_curve(
     prices: List[float] = []
     exp_pnl: List[float] = []
     mid_pnl: List[float] = []
+    spread_exp_pnl: List[float] = []
 
     for i in range(n_pts):
         p = low_p + i * step_p
@@ -477,6 +901,11 @@ def build_payoff_curve(
         intrinsic = max(0.0, strike - p)
         e_val = (premium - intrinsic) * mult
         exp_pnl.append(round(e_val, 1))
+
+        # Bull Put Spread at expiration: (net_credit - max(K_short - S_T, 0) + max(K_long - S_T, 0)) * multiplier
+        long_intrinsic = max(0.0, long_k - p)
+        sp_val = (net_credit - intrinsic + long_intrinsic) * mult
+        spread_exp_pnl.append(round(sp_val, 1))
 
         # At T/2: Short Put PnL = (Premium - Put_BSM(p, K, dte/2, iv)) * multiplier
         mid_res = price_put_and_greeks(
@@ -496,6 +925,8 @@ def build_payoff_curve(
         "prices": prices,
         "expPnl": exp_pnl,
         "midPnl": mid_pnl,
+        "spreadExpPnl": spread_exp_pnl,
+        "spreadInfo": spread_info,
         "maxProfit": round(premium * mult, 1),
         "breakeven": round(strike - premium, dp),
         "midDte": mid_dte,

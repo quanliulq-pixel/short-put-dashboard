@@ -384,6 +384,7 @@
       renderWorkstationHeader(detail);
       renderTierCards(detail);
       renderFactorsAndLadder(detail);
+      renderVolSurfaceAndRoll(detail);
       renderPlaybook(detail);
       renderKlineChart(detail);
 
@@ -437,6 +438,8 @@
         if (!t) return "";
         const isSel = k === state.selectedTierKey;
         const isSysRec = k === a.recommendedTierKey;
+        const sp = t.bullPutSpread || {};
+        const wh = t.wheelCoveredCall || {};
         return `
         <div class="tier-card ${isSel ? "active" : ""}" data-tier="${k}">
           <div class="tc-hdr">
@@ -452,8 +455,23 @@
             <div class="tc-row"><span>双轨胜率(BSM/5Y实证取低)</span><strong class="bull-txt">${fmtNum(t.popPct, 1)}% <small style="color:var(--text-muted)">(${fmtNum(t.bsmPopPct ?? t.popPct, 0)}%/${fmtNum(t.empiricalPopPct ?? t.popPct, 0)}%)</small></strong></div>
             <div class="tc-row"><span>单手保证金占用</span><strong>${cur}${fmtSmart(t.marginReq)}</strong></div>
             <div class="tc-row"><span>保证金口径年化</span><strong class="gold-txt">${fmtNum(t.annReturnMarginPct, 1)}%</strong></div>
-            <div class="tc-row"><span>全额担保年化 / 收益波动比</span><strong>${fmtNum(t.annReturnCashPct, 1)}% (${fmtNum(t.returnToVolRatio, 2)})</strong></div>
             <div class="tc-row"><span>每日Theta收租</span><strong class="bull-txt">+${cur}${fmtSmart(t.contractThetaDaily)}/日</strong></div>
+            ${
+              sp.longStrike
+                ? `<div style="margin-top:5px;padding-top:5px;border-top:1px dashed rgba(56,189,248,0.28);font-size:11px;color:#7dd3fc;">
+                     <div>🛡️ <strong>牛市价差配对：</strong>买K=${cur}${fmtSmart(sp.longStrike)} 保护</div>
+                     <div>净收 <strong>${cur}${fmtSmart(sp.contractNetCredit)}</strong> · 最大亏封顶 <strong>${cur}${fmtSmart(sp.maxLoss)}</strong></div>
+                     <div>省保证金 <strong class="bull-txt">${fmtNum(sp.marginSavedPct, 0)}%</strong> · 价差年化 <strong class="gold-txt">${fmtNum(sp.annReturnSpreadPct, 1)}%</strong></div>
+                   </div>`
+                : ""
+            }
+            ${
+              wh.callStrike
+                ? `<div style="margin-top:4px;padding-top:4px;border-top:1px dashed rgba(245,158,11,0.25);font-size:11px;color:#fcd34d;">
+                     <div>🔄 <strong>接货备兑Call：</strong>卖K=${cur}${fmtSmart(wh.callStrike)} (+${fmtNum(wh.callAnnReturnPct, 1)}%)</div>
+                   </div>`
+                : ""
+            }
           </div>
         </div>
       `;
@@ -466,6 +484,50 @@
         loadInstrumentDetail(a.id, tk, false);
       });
     });
+  }
+
+  function renderVolSurfaceAndRoll(detail) {
+    const box = el("ws-vol-surface");
+    if (!box) return;
+    const a = detail.analysis || {};
+    const vs = a.volSurface || {};
+    const skewCls = vs.skewTone === "bull" ? "bull-txt" : vs.skewTone === "gold" ? "gold-txt" : "cyan-txt";
+    const termCls = vs.termTone === "bear" ? "bear-txt" : vs.termTone === "bull" ? "bull-txt" : "gold-txt";
+
+    const rollHtml =
+      a.market === "us_stk"
+        ? `<span class="mini-tag">现货股票/ETF · 无期货换月跳空</span>`
+        : a.rollGapCount > 0
+        ? `<span class="mini-tag" style="border-color:rgba(16,185,129,0.45);color:#34d399;">✅ 主连换月跳空已平滑复权 (${a.rollGapCount}次换月缺口校准 · 最近 ${a.lastRollDate || "--"})</span>`
+        : `<span class="mini-tag" style="border-color:rgba(56,189,248,0.4);color:#7dd3fc;">✅ 主连连续K线无异常换月跳空缺口</span>`;
+
+    box.innerHTML = `
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:8px;">
+        <div style="background:rgba(8,12,20,0.55);border:1px solid var(--border);border-radius:6px;padding:7px 9px;">
+          <span style="font-size:11px;color:var(--text-muted);display:block;">25-Delta 虚值Put隐波</span>
+          <strong class="gold-txt" style="font-size:14px;">${fmtNum(vs.put25dIvPct, 1)}%</strong>
+          <small style="color:var(--text-muted);display:block;">较平值ATM(${fmtNum(vs.atmIvPct, 1)}%) 溢价 +${fmtNum(vs.skew25dPts, 1)}%</small>
+        </div>
+        <div style="background:rgba(8,12,20,0.55);border:1px solid var(--border);border-radius:6px;padding:7px 9px;">
+          <span style="font-size:11px;color:var(--text-muted);display:block;">25D 风险逆转 (Put-Call RR)</span>
+          <strong class="cyan-txt" style="font-size:14px;">${vs.riskReversal25dPts >= 0 ? "+" : ""}${fmtNum(vs.riskReversal25dPts, 1)} pts</strong>
+          <small style="color:var(--text-muted);display:block;">25D Call IV: ${fmtNum(vs.call25dIvPct, 1)}%</small>
+        </div>
+        <div style="background:rgba(8,12,20,0.55);border:1px solid var(--border);border-radius:6px;padding:7px 9px;">
+          <span style="font-size:11px;color:var(--text-muted);display:block;">IV期限结构 (7D→30D→60D)</span>
+          <strong class="${termCls}" style="font-size:13px;">${fmtNum(vs.iv7dPct, 1)}% → ${fmtNum(vs.iv30dPct, 1)}% → ${fmtNum(vs.iv60dPct, 1)}%</strong>
+          <small style="color:var(--text-muted);display:block;">远近月斜率 ${vs.termSlopePts >= 0 ? "+" : ""}${fmtNum(vs.termSlopePts, 1)}%</small>
+        </div>
+      </div>
+      <div class="pb-item" style="margin-bottom:6px;">
+        <strong>【偏度诊断】</strong><span class="${skewCls}">${vs.skewLabel || "--"}</span><br/>
+        <strong>【期限结构】</strong><span class="${termCls}">${vs.termLabel || "--"}</span>
+      </div>
+      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:6px;">
+        ${rollHtml}
+        <span style="font-size:11px;color:var(--text-muted);">数据源: ${a.ivSource || "模型校准"}</span>
+      </div>
+    `;
   }
 
   function renderFactorsAndLadder(detail) {
@@ -558,6 +620,8 @@
       <div class="pb-item pb-bull"><strong>【本周执行结论】</strong>${pb.headline || "--"}</div>
       <div class="pb-item pb-cyan"><strong>【基本面与成本/估值定位】</strong>${pb.whyNow || "--"}</div>
       <div class="pb-item"><strong>【行权价安全垫与收益测算】</strong>${pb.strikeLogic || "--"}</div>
+      ${pb.spreadLogic ? `<div class="pb-item" style="border-left:3px solid #a855f7;"><strong>【🛡️ 牛市看跌价差 (Bull Put Spread) 对冲方案】</strong>${pb.spreadLogic}</div>` : ""}
+      ${pb.wheelLogic ? `<div class="pb-item" style="border-left:3px solid #38bdf8;"><strong>【🔄 车轮策略 (The Wheel) 接货后备兑闭环】</strong>${pb.wheelLogic}</div>` : ""}
       <div class="pb-item pb-risk"><strong>【止盈纪律与防穿仓展期(Roll)风控】</strong>${pb.riskControl || "--"}</div>
     `;
   }
@@ -784,6 +848,52 @@
     const prices = payoff.prices || [];
     const expPnl = payoff.expPnl || [];
     const midPnl = payoff.midPnl || [];
+    const spreadExpPnl = payoff.spreadExpPnl || [];
+    const spreadName = payoff.spreadInfo
+      ? `牛市价差损益 (-K1/+K2=${cur}${fmtSmart(payoff.spreadInfo.longStrike)})`
+      : "牛市看跌价差损益 (Bull Put Spread)";
+
+    const legendData = ["裸卖Put到期损益", `期中理论损益 (T/2=${payoff.midDte}天)`];
+    if (spreadExpPnl.length) legendData.push(spreadName);
+
+    const seriesArr = [
+      {
+        name: "裸卖Put到期损益",
+        type: "line",
+        data: expPnl,
+        showSymbol: false,
+        lineStyle: { width: 2.5 },
+        areaStyle: { opacity: 0.14 },
+        markLine: {
+          symbol: ["none", "none"],
+          silent: true,
+          data: [
+            {
+              yAxis: 0,
+              lineStyle: { color: "#8b9bb4", width: 1, type: "solid" },
+            },
+          ],
+        },
+      },
+      {
+        name: `期中理论损益 (T/2=${payoff.midDte}天)`,
+        type: "line",
+        data: midPnl,
+        smooth: true,
+        showSymbol: false,
+        lineStyle: { width: 1.8, type: "dashed", color: "#f59e0b" },
+      },
+    ];
+
+    if (spreadExpPnl.length) {
+      seriesArr.push({
+        name: spreadName,
+        type: "line",
+        data: spreadExpPnl,
+        showSymbol: false,
+        lineStyle: { width: 2.2, type: "dotted", color: "#a855f7" },
+      });
+    }
 
     const option = {
       backgroundColor: "transparent",
@@ -806,7 +916,7 @@
         },
       },
       legend: {
-        data: ["到期损益 (Expiration PnL)", `期中理论损益 (T/2=${payoff.midDte}天)`],
+        data: legendData,
         top: 2,
         textStyle: { color: "#8b9bb4", fontSize: 11.5 },
       },
@@ -834,34 +944,7 @@
           { lt: 0, color: "#ef4444" },
         ],
       },
-      series: [
-        {
-          name: "到期损益 (Expiration PnL)",
-          type: "line",
-          data: expPnl,
-          showSymbol: false,
-          lineStyle: { width: 2.5 },
-          areaStyle: { opacity: 0.14 },
-          markLine: {
-            symbol: ["none", "none"],
-            silent: true,
-            data: [
-              {
-                yAxis: 0,
-                lineStyle: { color: "#8b9bb4", width: 1, type: "solid" },
-              },
-            ],
-          },
-        },
-        {
-          name: `期中理论损益 (T/2=${payoff.midDte}天)`,
-          type: "line",
-          data: midPnl,
-          smooth: true,
-          showSymbol: false,
-          lineStyle: { width: 1.8, type: "dashed", color: "#f59e0b" },
-        },
-      ],
+      series: seriesArr,
     };
 
     state.payoffChart.setOption(option, true);
@@ -1508,6 +1591,304 @@
     });
   }
 
+  // ---------------- Live Position Tracker, Roll Radar, Macro Shield & Webhook ----------------
+  async function loadPortfolioTracker() {
+    try {
+      const resp = await fetch("/api/portfolio");
+      const json = await resp.json();
+      if (json.error) throw new Error(json.error);
+      state.portfolioData = json;
+      renderPortfolioSection(json);
+    } catch (err) {
+      console.error("loadPortfolioTracker error:", err);
+    }
+  }
+
+  async function loadDailyBriefing() {
+    try {
+      const resp = await fetch(`/api/briefing?dte=${state.dte}`);
+      const json = await resp.json();
+      if (json.text && el("briefing-textarea")) {
+        el("briefing-textarea").value = json.text;
+      }
+    } catch (err) {
+      console.error("loadDailyBriefing error:", err);
+    }
+  }
+
+  function renderPortfolioSection(data) {
+    if (!data) return;
+    const s = data.summary || {};
+
+    if (el("pf-count")) {
+      const cnt = s.totalPositions ?? s.positionCount ?? 0;
+      el("pf-count").textContent = `${cnt} 笔`;
+      el("pf-count-sub").textContent = `实时盯市 · 每日Theta收租 +¥${fmtSmart(s.totalDailyThetaCny || 0)}/天`;
+    }
+    if (el("pf-pnl")) {
+      const sign = (s.totalUnrealizedPnlCny || 0) >= 0 ? "+" : "";
+      el("pf-pnl").textContent = `${sign}¥${fmtSmart(s.totalUnrealizedPnlCny || 0)}`;
+      el("pf-pnl").className = `bt-val ${(s.totalUnrealizedPnlCny || 0) >= 0 ? "bull-txt" : "bear-txt"}`;
+      el("pf-pnl-sub").textContent = `总保证金占用 ¥${fmtSmart(s.totalMarginCny || 0)}`;
+    }
+    if (el("pf-tp-count")) {
+      el("pf-tp-count").textContent = `${s.takeProfitCount || 0} 笔`;
+      el("pf-tp-sub").textContent = `浮盈 ≥ 65% 建议平仓落袋`;
+    }
+    if (el("pf-roll-count")) {
+      el("pf-roll-count").textContent = `${s.rollDefenseCount || 0} 笔`;
+      el("pf-roll-sub").textContent = `触碰行权价 → Roll Down & Out`;
+    }
+    if (el("pf-stop-count")) {
+      const stopCnt = s.stopLossCount ?? s.hardStopCount ?? 0;
+      el("pf-stop-count").textContent = `${stopCnt} 笔`;
+      el("pf-stop-sub").textContent = `亏损 ≥ 2.5R 强制截断 / 车轮备兑 ${s.wheelCallCount || 0}笔`;
+    }
+    if (el("pf-macro-badge")) {
+      const m = data.macroShield || {};
+      const hiCnt = m.highRiskInWindowCount || 0;
+      const evLen = (m.events || []).length;
+      const mCol = hiCnt >= 2 ? "#f87171" : hiCnt >= 1 ? "#fbbf24" : "#34d399";
+      const mLabel = hiCnt >= 2 ? `🔴 期内 ${hiCnt} 项高危冲击` : hiCnt >= 1 ? `🟡 期内 ${hiCnt} 项宏观节点` : "🟢 常态收租窗口";
+      el("pf-macro-badge").innerHTML = `<span style="color:${mCol}">${mLabel}</span>`;
+      el("pf-macro-sub").textContent = `未来45天内共 ${evLen} 项宏观/交割/长假节点`;
+    }
+
+    // Render Position Table
+    const tbody = el("portfolio-tbody");
+    if (tbody) {
+      const positions = data.positions || [];
+      if (!positions.length) {
+        tbody.innerHTML = `<tr><td colspan="12" class="empty-cell">暂无持仓记录，请点击上方按钮将当前品种加入持仓账本</td></tr>`;
+      } else {
+        tbody.innerHTML = positions
+          .map((p) => {
+            const cur = p.currency || "";
+            const tone = p.signalTone || p.actionTone || "neutral";
+            const badgeCls =
+              tone === "bull"
+                ? "badge-bull"
+                : tone === "bear"
+                ? "badge-bear"
+                : tone === "gold"
+                ? "badge-gold"
+                : "badge-neutral";
+            const pnlSign = p.unrealizedPnl >= 0 ? "+" : "";
+            const rSign = p.rMultiple >= 0 ? "+" : "";
+            const strat = p.strategyType || p.strategy || "SHORT_PUT";
+            const stratTag =
+              strat === "BULL_PUT_SPREAD" || strat === "bull_put_spread"
+                ? `<span class="mini-tag" style="border-color:rgba(168,85,247,0.45);color:#c084fc;">🛡️牛市价差(-${p.strike}/+${p.longStrike})</span>`
+                : strat === "WHEEL_COVERED_CALL"
+                ? `<span class="mini-tag" style="border-color:rgba(56,189,248,0.45);color:#38bdf8;">🔄车轮接货转备兑Call</span>`
+                : `<span class="mini-tag">裸卖Put</span>`;
+
+            const sigCode = p.signalCode || p.actionCode || "HOLD_THETA";
+            const sigLabel = p.signalLabel || p.actionBadge || "持有收租";
+            const openDt = p.openDate || p.entryDate || "--";
+            const curSpot = p.spot ?? p.currentSpot ?? 0;
+            const liveOtm = p.otmPct ?? p.liveOtmPct ?? 0;
+            const entryPrem = p.entryPremium ?? p.entryPrice ?? 0;
+            const curPrem = p.currentPremium ?? p.currentOptPrice ?? 0;
+            const capPct = p.capturePct ?? p.profitCapturedPct ?? 0;
+            const liveDelta = p.currentDelta ?? p.liveDelta ?? 0;
+            const liveTheta = p.dailyThetaTotal ?? p.liveThetaDaily ?? 0;
+
+            let rollOrWheelBox = `<div style="font-size:11.5px;line-height:1.45;">${p.actionDetail || ""}</div>`;
+            if (p.rollPlan && (sigCode === "ROLL_DEFENSE" || sigCode === "HARD_STOP")) {
+              const rp = p.rollPlan;
+              const netC = rp.netRollCredit ?? 0;
+              rollOrWheelBox += `
+                <div style="margin-top:4px;padding:4px 6px;background:rgba(245,158,11,0.1);border:1px solid rgba(245,158,11,0.3);border-radius:4px;font-size:11px;color:#fde68a;">
+                  🔄 <strong>向下展期测算:</strong> 平旧仓(${cur}${rp.buybackCost}) → 卖远期(${rp.newDte}D) <strong>K=${cur}${fmtSmart(rp.newStrike)}</strong>(收${cur}${rp.newPutPremium}) · 净收 <strong class="${rp.isNetCredit ? "bull-txt" : "bear-txt"}">${netC >= 0 ? "+" : ""}${cur}${netC}</strong> · 行权价下移 <strong>-${rp.strikeDropPct}%</strong>
+                </div>
+              `;
+            } else if (p.wheelPlan && sigCode === "WHEEL_CALL") {
+              const wp = p.wheelPlan;
+              rollOrWheelBox += `
+                <div style="margin-top:4px;padding:4px 6px;background:rgba(56,189,248,0.1);border:1px solid rgba(56,189,248,0.3);border-radius:4px;font-size:11px;color:#bae6fd;">
+                  🔄 <strong>车轮备兑Call:</strong> 接货净成本 <strong>${cur}${fmtSmart(wp.initialCostBasis)}</strong> → 卖30D Call <strong>K=${cur}${fmtSmart(wp.callStrike)}</strong> · 再收 <strong>+${cur}${fmtSmart(wp.contractCallPremium)}/手</strong> (年化 <strong>+${wp.callAnnReturnPct}%</strong>)
+                </div>
+              `;
+            }
+
+            return `
+              <tr data-id="${p.instId}">
+                <td><strong>${p.name}</strong> <span style="color:var(--text-muted)">${p.symbol}</span><br/>${stratTag} <small style="color:var(--text-muted)">${p.lots}手</small></td>
+                <td><small>${openDt} → ${p.expiryDate}</small><br/><strong class="${p.remDte <= 5 ? "gold-txt" : "cyan-txt"}">剩余 ${p.remDte} 天</strong></td>
+                <td class="num gold-txt"><strong>${cur}${fmtSmart(p.strike)}</strong></td>
+                <td class="num">${cur}${fmtSmart(p.entrySpot)} → <strong>${cur}${fmtSmart(curSpot)}</strong></td>
+                <td class="num ${liveOtm >= 2 ? "bull-txt" : "bear-txt"}"><strong>${fmtSignPct(liveOtm, 1)}</strong></td>
+                <td class="num">${cur}${fmtSmart(entryPrem)} → <strong>${cur}${fmtSmart(curPrem)}</strong></td>
+                <td class="num ${capPct >= 50 ? "bull-txt" : capPct < 0 ? "bear-txt" : "gold-txt"}"><strong>${fmtSignPct(capPct, 1)}</strong></td>
+                <td class="num ${p.unrealizedPnl >= 0 ? "bull-txt" : "bear-txt"}"><strong>${pnlSign}${cur}${fmtSmart(p.unrealizedPnl)}</strong><br/><small>(${rSign}${fmtNum(p.rMultiple, 2)}R)</small></td>
+                <td class="num">${fmtNum(liveDelta, 2)}<br/><small class="bull-txt">+${cur}${fmtSmart(liveTheta)}/D</small></td>
+                <td><span class="badge ${badgeCls}">${sigLabel}</span></td>
+                <td style="max-width:340px;white-space:normal;">${rollOrWheelBox}</td>
+                <td><button class="btn-outline btn-del-pos" data-pos-id="${p.posId}" style="padding:3px 8px;font-size:11px;color:#f87171;border-color:rgba(239,68,68,0.35);">移除</button></td>
+              </tr>
+            `;
+          })
+          .join("");
+
+        tbody.querySelectorAll(".btn-del-pos").forEach((btn) => {
+          btn.addEventListener("click", async (e) => {
+            e.stopPropagation();
+            const posId = btn.getAttribute("data-pos-id");
+            if (posId) await removePortfolioPos(posId);
+          });
+        });
+
+        tbody.querySelectorAll("tr[data-id]").forEach((tr) => {
+          tr.addEventListener("click", () => {
+            const id = tr.getAttribute("data-id");
+            if (id) selectInstrument(id, true);
+          });
+        });
+      }
+    }
+
+    // Render Macro & Holiday Shield Box
+    const macroBox = el("macro-shield-box");
+    if (macroBox && data.macroShield) {
+      const m = data.macroShield;
+      const hiCnt = m.highRiskInWindowCount || 0;
+      const evRows = (m.events || [])
+        .map((ev) => {
+          const isHigh = ev.riskLevel === "HIGH" || ev.severity === "CRITICAL";
+          const daysTxt = ev.daysText || `${ev.daysAway ?? ev.daysUntil ?? 0}天后`;
+          const sevBadge = isHigh
+            ? `<span class="badge badge-bear">🔴 高危风控(${daysTxt})</span>`
+            : `<span class="badge badge-gold">🟡 重点关注(${daysTxt})</span>`;
+          return `
+            <div style="background:rgba(13,20,34,0.75);border:1px solid var(--border);border-radius:6px;padding:8px 10px;margin-bottom:6px;">
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
+                <strong style="color:#fff;font-size:12px;">📅 ${ev.date} · ${ev.title}</strong>
+                ${sevBadge}
+              </div>
+              <div style="font-size:11px;color:var(--cyan);margin-bottom:2px;">影响市场: ${ev.markets || "全市场"} · 类别: ${ev.category || "宏观"}</div>
+              <div style="font-size:11.5px;color:var(--text-secondary);line-height:1.45;">${ev.advice || ev.rule || ""}</div>
+            </div>
+          `;
+        })
+        .join("");
+
+      const topBannerTitle =
+        hiCnt >= 1
+          ? `⚠️ 当前 ${m.targetDte || 30}天 持仓周期内含 ${hiCnt} 项高冲击宏观/长假节点`
+          : `🟢 近期宏观与长假窗口平稳（非常适合赚取Theta时间价值）`;
+      const topBannerDesc =
+        "议息夜/CPI发布前建议优先使用【牛市看跌价差】锁死左尾风险；国内长假前3个交易日注意交易所上调保证金比例与外盘跳空风险。";
+
+      macroBox.innerHTML = `
+        <div style="background:rgba(245,158,11,0.08);border:1px solid rgba(245,158,11,0.3);border-radius:8px;padding:9px 11px;margin-bottom:8px;">
+          <div style="font-weight:800;font-size:12.5px;color:var(--gold);margin-bottom:3px;">${topBannerTitle}</div>
+          <div style="font-size:11.5px;color:var(--text-secondary);line-height:1.45;">${topBannerDesc}</div>
+        </div>
+        <div style="max-height:260px;overflow-y:auto;">
+          ${evRows || `<div class="empty-note">未来45天暂无特殊宏观/长假冲击事件</div>`}
+        </div>
+      `;
+    }
+  }
+
+  async function addCurrentToPortfolio(strategy = "naked_put") {
+    if (!state.detailData || !state.detailData.analysis) return;
+    const a = state.detailData.analysis;
+    const tk = state.selectedTierKey || a.recommendedTierKey || "balanced";
+    const t = (a.tiers && a.tiers[tk]) || a.recommendedTier;
+    const lots = parseInt(el("sim-lots")?.value, 10) || 1;
+    const isSpread = strategy === "bull_put_spread";
+
+    try {
+      const payload = {
+        instId: a.id,
+        strategyType: isSpread ? "BULL_PUT_SPREAD" : "SHORT_PUT",
+        strike: t.strike,
+        longStrike: isSpread && t.bullPutSpread ? t.bullPutSpread.longStrike : null,
+        entrySpot: a.price,
+        entryPremium: isSpread && t.bullPutSpread ? t.bullPutSpread.netCredit : t.premium,
+        ivPct: a.atmIvPct,
+        dte: state.dte,
+        lots: lots,
+        note: isSpread ? `工作台录入牛市价差 (${t.label})` : `工作台录入裸卖Put (${t.label})`,
+      };
+      const resp = await fetch("/api/portfolio/add", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const json = await resp.json();
+      const tracker = json.tracker || json;
+      if (tracker && tracker.positions) {
+        state.portfolioData = tracker;
+        renderPortfolioSection(tracker);
+        loadDailyBriefing();
+        el("portfolio-section")?.scrollIntoView({ behavior: "smooth", block: "start" });
+      }
+    } catch (err) {
+      console.error("addCurrentToPortfolio error:", err);
+    }
+  }
+
+  async function removePortfolioPos(posId) {
+    try {
+      const resetDefault = posId === "RESET_DEFAULT";
+      const resp = await fetch("/api/portfolio/remove", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ posId, resetDefault }),
+      });
+      const json = await resp.json();
+      const tracker = json.tracker || json;
+      if (tracker && tracker.positions) {
+        state.portfolioData = tracker;
+        renderPortfolioSection(tracker);
+        loadDailyBriefing();
+      }
+    } catch (err) {
+      console.error("removePortfolioPos error:", err);
+    }
+  }
+
+  async function sendWebhookAlert() {
+    const urlInput = el("webhook-url-input");
+    const statusEl = el("webhook-status-msg");
+    const webhookUrl = urlInput?.value?.trim() || "";
+    const customText = el("briefing-textarea")?.value || "";
+
+    if (!webhookUrl) {
+      if (statusEl) {
+        statusEl.style.color = "#fbbf24";
+        statusEl.textContent = "⚠️ 请先在输入框粘贴钉钉 / 飞书 / 企业微信机器人的 Webhook 地址（若只需复制战报文字，请点击右侧“复制战报”按钮）";
+      }
+      return;
+    }
+
+    if (statusEl) {
+      statusEl.style.color = "#38bdf8";
+      statusEl.textContent = "⏳ 正在向 Webhook 推送今日卖Put量化战报...";
+    }
+
+    try {
+      const resp = await fetch("/api/webhook-push", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ webhookUrl, text: customText, dte: state.dte }),
+      });
+      const json = await resp.json();
+      if (statusEl) {
+        statusEl.style.color = json.ok ? "#34d399" : "#f87171";
+        statusEl.textContent = json.ok ? `✅ ${json.msg}` : `❌ ${json.msg}`;
+      }
+    } catch (err) {
+      if (statusEl) {
+        statusEl.style.color = "#f87171";
+        statusEl.textContent = `❌ 推送请求失败: ${err.message}`;
+      }
+    }
+  }
+
   // ---------------- iPhone QR Code Modal & Offline Export ----------------
   async function openMobileModal() {
     const modal = el("mobile-modal");
@@ -1603,6 +1984,8 @@
 
     el("btn-refresh")?.addEventListener("click", () => {
       loadRecommendations(true);
+      loadPortfolioTracker();
+      loadDailyBriefing();
     });
 
     el("btn-mobile-modal")?.addEventListener("click", () => {
@@ -1651,6 +2034,36 @@
       if (state.selectedId) loadLiveOptionChain(state.selectedId);
     });
 
+    el("btn-add-cur-to-portfolio")?.addEventListener("click", () => {
+      addCurrentToPortfolio("naked_put");
+    });
+
+    el("btn-add-spread-to-portfolio")?.addEventListener("click", () => {
+      addCurrentToPortfolio("bull_put_spread");
+    });
+
+    el("btn-reset-portfolio")?.addEventListener("click", () => {
+      removePortfolioPos("RESET_DEFAULT");
+    });
+
+    el("btn-copy-briefing")?.addEventListener("click", async () => {
+      const txt = el("briefing-textarea")?.value || "";
+      if (!txt) return;
+      try {
+        await navigator.clipboard.writeText(txt);
+        const btn = el("btn-copy-briefing");
+        if (btn) {
+          const old = btn.textContent;
+          btn.textContent = "已复制战报 ✓";
+          setTimeout(() => (btn.textContent = old), 2000);
+        }
+      } catch (_) {}
+    });
+
+    el("btn-send-webhook")?.addEventListener("click", () => {
+      sendWebhookAlert();
+    });
+
     el("mkt-filter-tabs")?.querySelectorAll("button").forEach((btn) => {
       btn.addEventListener("click", () => {
         el("mkt-filter-tabs").querySelectorAll("button").forEach((b) => b.classList.remove("active"));
@@ -1694,6 +2107,8 @@
   document.addEventListener("DOMContentLoaded", () => {
     bindEvents();
     loadRecommendations(false);
+    loadPortfolioTracker();
+    loadDailyBriefing();
     loadBacktestReview(false);
     loadStressTest(false);
   });

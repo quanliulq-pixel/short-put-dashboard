@@ -247,8 +247,76 @@ def _fetch_yahoo_daily_bars(yahoo_code: str, range_str: str = "5y") -> List[Dict
     return out[-1260:]
 
 
+def _adjust_futures_roll_gaps(inst: Dict[str, Any], bars: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    Continuous Futures Contract Roll-Gap Detection & Backward Ratio Adjustment:
+    - Keeps the latest bar (`bars[-1]`) at 100% true unadjusted market price so current spot,
+      strikes, and static cost comparisons remain exact.
+    - Scans backward for contract-switch overnight gaps where |open[i] / close[i-1] - 1| >= 2.8%
+      accompanied by an abnormal jump relative to recent range (> 2.1x local ATR) or OI shift,
+      and smooths prior bars to prevent roll gaps from distorting MA20/MA60/RSI14/HV20.
+    """
+    if not bars or len(bars) < 30 or inst.get("market") not in ("cn_fut", "us_fut"):
+        return bars
+
+    n = len(bars)
+    dp = int(inst.get("dp", 2))
+    # Compute local 10-bar average true range
+    ranges = [max(b["h"] - b["l"], b["c"] * 0.004) for b in bars]
+    cum_factor = 1.0
+    roll_count = 0
+    last_roll_date = ""
+
+    # Traverse backward from n-1 down to 1
+    factors = [1.0] * n
+    for i in range(n - 1, 0, -1):
+        c_prev = float(bars[i - 1]["c"])
+        o_cur = float(bars[i]["o"])
+        if c_prev > 0 and o_cur > 0:
+            gap_ratio = o_cur / c_prev
+            gap_pct = abs(gap_ratio - 1.0)
+            start_r = max(0, i - 12)
+            local_atr = sum(ranges[start_r:i]) / max(1, i - start_r)
+            gap_abs = abs(o_cur - c_prev)
+            oi_prev = float(bars[i - 1].get("oi") or 0.0)
+            oi_cur = float(bars[i].get("oi") or 0.0)
+            oi_jump = (oi_prev > 1000 and oi_cur > oi_prev * 1.16)
+
+            # Identify contract switch gap (not normal intraday volatility)
+            if 0.028 <= gap_pct <= 0.22 and (gap_abs >= 2.15 * local_atr or (oi_jump and gap_pct >= 0.022)):
+                # Apply 85% dampening of the roll gap to preserve true macro trend while removing splice jump
+                step_factor = 1.0 + (gap_ratio - 1.0) * 0.85
+                if 0.72 <= cum_factor * step_factor <= 1.38:
+                    cum_factor *= step_factor
+                    roll_count += 1
+                    if not last_roll_date:
+                        last_roll_date = str(bars[i].get("t", ""))
+        factors[i - 1] = cum_factor
+
+    if roll_count == 0:
+        bars[-1]["rollGapCount"] = 0
+        bars[-1]["lastRollDate"] = ""
+        return bars
+
+    out: List[Dict[str, Any]] = []
+    for idx, b in enumerate(bars):
+        f = factors[idx]
+        nb = dict(b)
+        nb["raw_c"] = b["c"]
+        if abs(f - 1.0) > 1e-5:
+            nb["o"] = round(b["o"] * f, dp + 2)
+            nb["h"] = round(b["h"] * f, dp + 2)
+            nb["l"] = round(b["l"] * f, dp + 2)
+            nb["c"] = round(b["c"] * f, dp + 2)
+        out.append(nb)
+
+    out[-1]["rollGapCount"] = roll_count
+    out[-1]["lastRollDate"] = last_roll_date
+    return out
+
+
 def get_instrument_bars(inst_id: str, force: bool = False) -> List[Dict[str, Any]]:
-    """Return daily OHLCV bars for an instrument, patched with latest real-time quote."""
+    """Return daily OHLCV bars for an instrument, patched with latest real-time quote and roll-adjusted."""
     inst = BY_ID.get(inst_id)
     if not inst:
         return []
@@ -258,7 +326,7 @@ def get_instrument_bars(inst_id: str, force: bool = False) -> List[Dict[str, Any
         cached_item = _BARS_MEM.get(inst_id)
         if not force and cached_item and (now - cached_item[0] < BARS_TTL) and cached_item[1]:
             bars = [dict(b) for b in cached_item[1]]
-            return _patch_realtime_bar(inst, bars)
+            return _adjust_futures_roll_gaps(inst, _patch_realtime_bar(inst, bars))
 
     # Fetch fresh daily bars
     try:
@@ -273,12 +341,12 @@ def get_instrument_bars(inst_id: str, force: bool = False) -> List[Dict[str, Any
     if bars:
         with _BARS_LOCK:
             _BARS_MEM[inst_id] = (time.time(), bars)
-        return _patch_realtime_bar(inst, [dict(b) for b in bars])
+        return _adjust_futures_roll_gaps(inst, _patch_realtime_bar(inst, [dict(b) for b in bars]))
 
     # Fallback to stale memory if any
     with _BARS_LOCK:
         if cached_item and cached_item[1]:
-            return _patch_realtime_bar(inst, [dict(b) for b in cached_item[1]])
+            return _adjust_futures_roll_gaps(inst, _patch_realtime_bar(inst, [dict(b) for b in cached_item[1]]))
     return []
 
 
@@ -573,10 +641,145 @@ def _fetch_cffex_option_chain(inst: Dict[str, Any], target_dte: int = 30) -> Dic
     }
 
 
+_CN_EXCH_MAP: Dict[str, Tuple[str, bool]] = {
+    "上期所": ("shfe", True),
+    "大商所": ("dce", True),
+    "郑商所": ("czce", False),
+    "广期所": ("gfex", True),
+    "上期能源": ("ine", True),
+}
+
+
+def _fetch_cn_commodity_option_chain(inst: Dict[str, Any], target_dte: int = 30) -> Dict[str, Any]:
+    """
+    Fetch real-time China Commodity Option Chain (SHFE / DCE / CZCE / GFEX / INE) from Sina OptionService.
+    Solves Black-76 implied volatility from real market Bid/Ask/Last prices for both Puts and Calls.
+    """
+    exch_info = _CN_EXCH_MAP.get(str(inst.get("exchange") or ""))
+    if not exch_info:
+        return {"available": False, "note": "暂不支持该交易所期权链"}
+    exch_code, need_o_suffix = exch_info
+
+    raw_sym = re.sub(r"\d+$", "", str(inst.get("symbol") or "")).lower()
+    if not raw_sym:
+        return {"available": False, "note": "无效商品代码"}
+    prod = f"{raw_sym}_o" if need_o_suffix else raw_sym
+
+    bars = get_instrument_bars(inst["id"], force=False)
+    spot = float(bars[-1]["c"]) if bars else 0.0
+    if spot <= 0:
+        return {"available": False, "note": "无法获取商品期货现价"}
+
+    dp = int(inst.get("dp", 2))
+    today = datetime.now().date()
+    # Generate candidate contract months (upcoming 1-3 months + dominant 01/05/09/06/12 contracts)
+    cand_yms: List[Tuple[int, int]] = []
+    for add_m in (1, 2, 3, 4, 5):
+        cy = today.year + (today.month + add_m - 1) // 12
+        cm = (today.month + add_m - 1) % 12 + 1
+        cand_yms.append((cy, cm))
+
+    # Dominant months in China futures (01, 05, 09 for most; 06, 12 for au/ag/cu)
+    dom_months = (6, 12, 2, 4, 8, 10) if raw_sym in ("au", "ag") else (1, 5, 9, 12)
+    cand_yms.sort(key=lambda ym: (0 if ym[1] in dom_months else 1, abs(((ym[0] - today.year) * 12 + ym[1] - today.month) * 28 - target_dte)))
+
+    down = []
+    up = []
+    chosen_pz = ""
+    chosen_ym = cand_yms[0]
+    for cy, cm in cand_yms[:4]:
+        pz = f"{raw_sym}{str(cy)[-2:]}{cm:02d}"
+        url = (
+            f"https://stock.finance.sina.com.cn/futures/api/openapi.php/OptionService.getOptionData"
+            f"?type=futures&product={prod}&exchange={exch_code}&pinzhong={pz}"
+        )
+        try:
+            j = fetch_json(url, headers=SINA_HEADERS, timeout=4.5)
+            data_obj = (j.get("result") or {}).get("data") or {}
+            cand_down = data_obj.get("down") or []
+            if len(cand_down) >= 5:
+                down = cand_down
+                up = data_obj.get("up") or []
+                chosen_pz = pz
+                chosen_ym = (cy, cm)
+                break
+        except Exception:
+            continue
+
+    if not down:
+        return {"available": False, "note": f"暂未获取到 {inst['name']} 实时商品期权链"}
+
+    # Commodity options in China generally expire ~25th of the month preceding delivery month
+    cy, cm = chosen_ym
+    prev_y = cy if cm > 1 else cy - 1
+    prev_m = cm - 1 if cm > 1 else 12
+    try:
+        exp_date = datetime(prev_y, prev_m, 25).date()
+        if exp_date <= today:
+            exp_date = datetime(cy, cm, 15).date()
+    except Exception:
+        exp_date = today
+    actual_dte = max(5, min(120, (exp_date - today).days))
+
+    rows: List[Dict[str, Any]] = []
+    for item in down:
+        if len(item) < 8:
+            continue
+        sym_str = str(item[7])
+        m_strike = re.search(r"P[-]?(\d+(?:\.\d+)?)", sym_str, re.IGNORECASE)
+        if not m_strike:
+            continue
+        k = float(m_strike.group(1))
+        if k > spot * 1.03 or k < spot * 0.78:
+            continue
+        bid = _fnum(item[1]) or 0.0
+        last_p = _fnum(item[2]) or 0.0
+        ask = _fnum(item[3]) or 0.0
+        mid = round((bid + ask) / 2.0, max(dp, 2)) if (bid > 0 and ask > 0) else last_p
+        oi = int(_fnum(item[5]) or 0)
+        vol = int(_fnum(item[0]) or 0) + int(_fnum(item[4]) or 0)
+        otm_pct = round((spot - k) / spot * 100.0, 2)
+        px_ref = mid if mid > 0 else last_p
+        if px_ref <= 0:
+            continue
+        ann_cash = round((px_ref / k) * (365.0 / actual_dte) * 100.0, 1) if k > 0 else 0.0
+        solved_iv = _solve_cffex_put_iv(spot, k, actual_dte, px_ref, r=0.02, is_futures=True)
+        rows.append(
+            {
+                "contractSymbol": sym_str.upper(),
+                "strike": round(k, dp),
+                "otmPct": otm_pct,
+                "bid": round(bid, max(dp, 2)),
+                "ask": round(ask, max(dp, 2)),
+                "mid": round(px_ref, max(dp, 2)),
+                "lastPrice": round(last_p, max(dp, 2)),
+                "ivPct": solved_iv,
+                "volume": vol,
+                "openInterest": oi,
+                "annCashReturnPct": ann_cash,
+            }
+        )
+
+    rows.sort(key=lambda x: x["strike"], reverse=True)
+    return {
+        "available": len(rows) > 0,
+        "ticker": chosen_pz.upper(),
+        "isProxy": False,
+        "currency": "¥",
+        "spot": round(spot, dp),
+        "expiry": f"{exp_date.strftime('%Y-%m-%d')} ({inst['exchange']}期权到期)",
+        "dte": actual_dte,
+        "puts": rows[:14],
+        "updatedAt": now_bj(),
+    }
+
+
 def fetch_live_option_chain_sample(inst_id: str, target_dte: int = 30) -> Dict[str, Any]:
     """
-    On-demand live option chain verification via Sina (for CFFEX MO/IO/HO) or
-    yfinance (for US Stocks/ETFs & US Futures proxies), returning real Bid/Ask/Last/OI.
+    On-demand live option chain verification via:
+    1) Sina OptionService for CFFEX Index Options (MO/IO/HO)
+    2) Sina OptionService for China Commodity Options (SHFE/DCE/CZCE/GFEX/INE)
+    3) Yahoo Finance (yfinance) for US Stocks/ETFs & US Futures ETF proxies
     """
     inst = get_instrument(inst_id)
     if not inst:
@@ -591,6 +794,16 @@ def fetch_live_option_chain_sample(inst_id: str, target_dte: int = 30) -> Dict[s
             )
         except Exception as exc:
             logger.debug("CFFEX chain fail %s: %s", inst_id, exc)
+
+    if inst["market"] == "cn_fut" and not inst.get("cffex_opt"):
+        try:
+            return cached(
+                f"cn_comm_chain:{inst['id']}:{target_dte}",
+                180.0,
+                lambda: _fetch_cn_commodity_option_chain(inst, target_dte=target_dte),
+            )
+        except Exception as exc:
+            logger.debug("CN commodity chain fail %s: %s", inst_id, exc)
 
     ticker_sym = None
     is_proxy = False
@@ -697,6 +910,8 @@ def fetch_live_option_chain_sample(inst_id: str, target_dte: int = 30) -> Dict[s
 
 _US_IV_BG_STARTED = False
 _US_IV_MEM: Dict[str, float] = {}
+_CN_COMM_IV_BG_STARTED = False
+_CN_COMM_IV_MEM: Dict[str, Tuple[float, str]] = {}
 
 
 def _extract_atm_iv_from_chain(ch: Dict[str, Any]) -> Optional[float]:
@@ -738,6 +953,30 @@ def _bg_refresh_us_option_ivs(target_dte: int = 30) -> None:
         _US_IV_BG_STARTED = False
 
 
+def _bg_refresh_cn_comm_option_ivs(target_dte: int = 30) -> None:
+    global _CN_COMM_IV_BG_STARTED
+    try:
+        saved = load_pickle("real_cn_comm_iv_v1.pkl", max_age_sec=14400.0) or {}
+        if isinstance(saved, dict):
+            _CN_COMM_IV_MEM.update(saved)
+        cn_insts = [x for x in ALL_INSTRUMENTS if x["market"] == "cn_fut" and not x.get("cffex_opt")]
+        for inst in cn_insts:
+            iid = inst["id"]
+            if iid in _CN_COMM_IV_MEM:
+                continue
+            try:
+                ch = fetch_live_option_chain_sample(iid, target_dte=target_dte)
+                iv_val = _extract_atm_iv_from_chain(ch)
+                if iv_val and 0.07 <= iv_val <= 1.25:
+                    _CN_COMM_IV_MEM[iid] = (round(iv_val, 4), str(ch.get("ticker") or inst["symbol"]))
+            except Exception:
+                continue
+        if _CN_COMM_IV_MEM:
+            save_pickle("real_cn_comm_iv_v1.pkl", dict(_CN_COMM_IV_MEM))
+    finally:
+        _CN_COMM_IV_BG_STARTED = False
+
+
 def get_real_iv_map(
     target_dte: int = 30,
     macro_regime: Optional[Dict[str, Any]] = None,
@@ -748,9 +987,10 @@ def get_real_iv_map(
     Combines:
     1) CBOE Official Implied Volatility Indices (^VIX, ^VXN, ^OVX, ^GVZ)
     2) CFFEX Real-Time Index Option Chains (MO / IO / HO via Sina OptionService)
-    3) US Stocks & ETFs Real Option Chains (cached on disk + background refreshed via yfinance)
+    3) China Commodity Real-Time Option Chains (SHFE/DCE/CZCE/GFEX/INE via Sina OptionService)
+    4) US Stocks & ETFs Real Option Chains (cached on disk + background refreshed via yfinance)
     """
-    global _US_IV_BG_STARTED
+    global _US_IV_BG_STARTED, _CN_COMM_IV_BG_STARTED
     out: Dict[str, Dict[str, Any]] = {}
     mr = macro_regime or {}
 
@@ -781,6 +1021,24 @@ def get_real_iv_map(
                 out[cid] = {"atmIv": iv_val, "ivSource": f"🟢 实盘IV(中金所{ch.get('ticker','')})"}
         except Exception:
             pass
+
+    # Load cached China Commodity option chain IVs and trigger non-blocking refresh
+    if not _CN_COMM_IV_MEM:
+        saved_cn = load_pickle("real_cn_comm_iv_v1.pkl", max_age_sec=14400.0)
+        if isinstance(saved_cn, dict) and saved_cn:
+            _CN_COMM_IV_MEM.update(saved_cn)
+
+    for iid, val in list(_CN_COMM_IV_MEM.items()):
+        if isinstance(val, (list, tuple)) and len(val) >= 2:
+            iv_v, tk_str = float(val[0]), str(val[1])
+        else:
+            iv_v, tk_str = float(val), ""
+        if iid not in out and 0.07 <= iv_v <= 1.25:
+            out[iid] = {"atmIv": iv_v, "ivSource": f"🟢 实盘IV(商品期权{tk_str})"}
+
+    if not _CN_COMM_IV_BG_STARTED and len(_CN_COMM_IV_MEM) < 18:
+        _CN_COMM_IV_BG_STARTED = True
+        threading.Thread(target=_bg_refresh_cn_comm_option_ivs, args=(target_dte,), daemon=True).start()
 
     # Load any cached US stock option chain IVs and trigger non-blocking background refresh if needed
     if not _US_IV_MEM:

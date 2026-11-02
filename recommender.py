@@ -31,7 +31,7 @@ from data_engine import (
     get_real_iv_map,
 )
 from http_utils import cached, get_week_context, load_pickle, now_bj, save_pickle
-from options_math import build_payoff_curve, build_put_tiers
+from options_math import build_payoff_curve, build_put_tiers, compute_vol_skew_and_term
 from universe import ALL_INSTRUMENTS, get_instrument
 
 logger = logging.getLogger(__name__)
@@ -941,6 +941,19 @@ def analyze_single_instrument(
         total_score=total_score,
     )
 
+    vol_surface = compute_vol_skew_and_term(
+        inst=inst,
+        spot=spot,
+        atm_iv=atm_iv,
+        hv20=hv20,
+        hv60=hv60,
+        hv_med_1y=hv_med_1y,
+        dte=target_dte,
+        earnings_in_window=bool(earnings_info and earnings_info.get("inWindow")),
+    )
+    roll_gap_count = int(bars[-1].get("rollGapCount") or 0)
+    last_roll_date = str(bars[-1].get("lastRollDate") or "")
+
     playbook = _build_weekly_playbook(
         inst=inst,
         spot=spot,
@@ -996,6 +1009,9 @@ def analyze_single_instrument(
         "isRealIv": is_real_iv,
         "ivRank": iv_rank,
         "vrpPts": vrp_pts,
+        "volSurface": vol_surface,
+        "rollGapCount": roll_gap_count,
+        "lastRollDate": last_roll_date,
         "trendRegime": trend_regime,
         "liquidityLabel": liq_label,
         "earningsInfo": earnings_info,
@@ -1184,14 +1200,30 @@ def _build_weekly_playbook(
         f"若希望低位拿货建仓可选【进取档】{cur}{agg['strike']:g}。"
     )
 
+    sp = rec.get("bullPutSpread") or {}
+    wh = rec.get("wheelCoveredCall") or {}
+    spread_txt = (
+        f"【牛市看跌价差 (Bull Put Spread) 配对】卖 {cur}{sp['shortStrike']:g} Put + 买 {cur}{sp['longStrike']:g} 保护腿，"
+        f"净收权利金 {cur}{sp['contractNetCredit']:g}/手（保留裸卖权利金的 {sp['creditRetentionPct']:.0f}%），"
+        f"单手最大亏损严格封顶于 {cur}{sp['maxLoss']:g}，保证金节省 {sp['marginSavedPct']:.0f}%，价差年化ROC达 {sp['annReturnSpreadPct']:.1f}%。"
+        if sp
+        else ""
+    )
+    wheel_txt = (
+        f"【车轮策略 (The Wheel) 接货备兑预案】若到期跌破 {cur}{rec['strike']:g} 接货（接货净成本 {cur}{wh['initialCostBasis']:g}），"
+        f"次月可立即卖出 {cur}{wh['callStrike']:g} 备兑Call（Delta {wh['callDelta']:.2f}），再收权利金 {cur}{wh['contractCallPremium']:g}/手"
+        f"（备兑年化 +{wh['callAnnReturnPct']:.1f}%），将持仓成本进一步降至 {cur}{wh['newCostBasis']:g}。"
+        if wh
+        else ""
+    )
+
     stop_px = round(rec["breakeven"] * 0.985, int(inst.get("dp", 2)))
     risk_prefix = f"【风控预警：{'；'.join(risk_notes)}】 " if risk_notes else ""
     risk_control = (
         f"{risk_prefix}"
-        f"① 止盈规则：当权利金衰减至初始值的 25%~30%（已赚取70%+时间价值）时建议提前平仓锁定胜局；"
-        f"② 展期/防御规则：若标的价格放量跌破行权价 {cur}{rec['strike']:g} 且逼近盈亏平衡点 {cur}{rec['breakeven']:g}，"
-        f"切勿硬扛深实值伽马风险，可向后展期（Roll Out & Down）至下一月更低行权价，或以 {cur}{stop_px:g} 作为风控复核线；"
-        f"③ 仓位上限：单一品种卖Put保证金占用不超过账户总权益的 8%~12%。"
+        f"① 止盈规则：当权利金衰减至初始值的 25%~35%（已赚取65%~75%时间价值）时建议提前平仓释放保证金；"
+        f"② 展期/止损规则：若标的价格放量跌破行权价 {cur}{rec['strike']:g} 或浮亏触及 -1.5R，可向下展期（Roll Down & Out）净收权利金移仓，若触及 -2.5R 硬止损线（约 {cur}{stop_px:g}）果断截断尾部风险；"
+        f"③ 价差与车轮协同：{spread_txt} {wheel_txt}"
     )
 
     return {
@@ -1199,6 +1231,8 @@ def _build_weekly_playbook(
         "whyNow": why_now,
         "strikeLogic": strike_logic,
         "riskControl": risk_control,
+        "spreadLogic": spread_txt,
+        "wheelLogic": wheel_txt,
     }
 
 

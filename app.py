@@ -19,6 +19,13 @@ from flask import Flask, Response, jsonify, render_template, request
 from backtest_engine import get_historical_review, run_portfolio_stress_test
 from data_engine import fetch_live_option_chain_sample
 from options_math import build_payoff_curve, price_put_and_greeks, skew_adjusted_iv
+from portfolio_engine import (
+    add_portfolio_position,
+    generate_daily_briefing,
+    get_portfolio_tracker,
+    remove_portfolio_position,
+    send_webhook_alert,
+)
 from recommender import get_instrument_detail, get_weekly_recommendations
 from universe import get_instrument
 
@@ -377,6 +384,8 @@ def api_simulate():
     if lots != 1:
         payoff["expPnl"] = [round(x * lots, 1) for x in payoff["expPnl"]]
         payoff["midPnl"] = [round(x * lots, 1) for x in payoff["midPnl"]]
+        if "spreadExpPnl" in payoff:
+            payoff["spreadExpPnl"] = [round(x * lots, 1) for x in payoff["spreadExpPnl"]]
         payoff["maxProfit"] = round(payoff["maxProfit"] * lots, 1)
 
     return jsonify(
@@ -400,6 +409,65 @@ def api_simulate():
             "payoff": payoff,
         }
     )
+
+
+@app.route("/api/portfolio")
+def api_portfolio():
+    dte = request.args.get("dte", default=30, type=int) or 30
+    try:
+        data = get_portfolio_tracker(target_dte=dte)
+        return jsonify(data)
+    except Exception as exc:
+        logger.exception("api_portfolio failed")
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.route("/api/portfolio/add", methods=["POST"])
+def api_portfolio_add():
+    payload = request.get_json(silent=True) or {}
+    try:
+        data = add_portfolio_position(payload)
+        return jsonify(data)
+    except Exception as exc:
+        logger.exception("api_portfolio_add failed")
+        return jsonify({"error": str(exc)}), 400
+
+
+@app.route("/api/portfolio/remove", methods=["POST"])
+def api_portfolio_remove():
+    payload = request.get_json(silent=True) or {}
+    pos_id = str(payload.get("posId") or "")
+    reset_default = bool(payload.get("resetDefault"))
+    try:
+        data = remove_portfolio_position(pos_id=pos_id, reset_default=reset_default)
+        return jsonify(data)
+    except Exception as exc:
+        logger.exception("api_portfolio_remove failed")
+        return jsonify({"error": str(exc)}), 400
+
+
+@app.route("/api/briefing")
+def api_briefing():
+    dte = request.args.get("dte", default=30, type=int) or 30
+    try:
+        data = generate_daily_briefing(target_dte=dte)
+        return jsonify(data)
+    except Exception as exc:
+        logger.exception("api_briefing failed")
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.route("/api/webhook-push", methods=["POST"])
+def api_webhook_push():
+    payload = request.get_json(silent=True) or {}
+    url = str(payload.get("webhookUrl") or "")
+    dte = int(payload.get("dte") or 30)
+    try:
+        data = send_webhook_alert(webhook_url=url, target_dte=dte)
+        return jsonify(data)
+    except Exception as exc:
+        logger.exception("api_webhook_push failed")
+        return jsonify({"ok": False, "msg": str(exc)}), 500
 
 
 @app.route("/api/backtest")
