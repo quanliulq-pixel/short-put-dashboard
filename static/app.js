@@ -248,14 +248,13 @@
     const dtSum = data.directTradeSummary || {};
     const dtPicks = data.directTopPicks || {};
 
-    if (el("dt-kpi-long")) el("dt-kpi-long").textContent = `${dtSum.strongLongCount || 0} 个`;
-    if (el("dt-kpi-short")) el("dt-kpi-short").textContent = `${dtSum.shortSignalCount || 0} 个`;
-    if (el("dt-kpi-prefer-direct")) el("dt-kpi-prefer-direct").textContent = `${dtSum.preferDirectCount || 0} 个`;
-    if (el("dt-kpi-combo")) el("dt-kpi-combo").textContent = `${dtSum.hybridComboCount || 0} 个`;
-    if (el("dt-kpi-prefer-put")) el("dt-kpi-prefer-put").textContent = `${dtSum.preferPutCount || 0} 个`;
-    if (el("dt-kpi-rr")) {
-      el("dt-kpi-rr").textContent = `1 : ${fmtNum(dtSum.avgRrRatio, 2)} (${fmtNum(dtSum.avgEmpWinRatePct, 1)}%)`;
-    }
+    if (el("dt-strong-long")) el("dt-strong-long").textContent = `${dtSum.strongLongCount || 0} 个`;
+    if (el("dt-short-fut")) el("dt-short-fut").textContent = `${dtSum.shortSignalCount || 0} 个`;
+    if (el("dt-prefer-direct")) el("dt-prefer-direct").textContent = `${dtSum.preferDirectCount || 0} 个`;
+    if (el("dt-hybrid-combo")) el("dt-hybrid-combo").textContent = `${dtSum.hybridComboCount || 0} 个`;
+    if (el("dt-prefer-put-sub")) el("dt-prefer-put-sub").textContent = `纯卖Put收租占优 ${dtSum.preferPutCount || 0} 个`;
+    if (el("dt-avg-rr")) el("dt-avg-rr").textContent = `${fmtNum(dtSum.avgRrRatio, 2)} : 1`;
+    if (el("dt-avg-winrate")) el("dt-avg-winrate").textContent = `${fmtNum(dtSum.avgEmpWinRatePct, 1)}%`;
 
     const usStkLong = dtPicks.usStkLong || [];
     const futLong = dtPicks.futLong || [];
