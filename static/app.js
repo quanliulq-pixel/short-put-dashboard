@@ -600,7 +600,80 @@
         </div>
         <div style="color:#e2e8f0;"><strong>🎯 机构决策建议：</strong>${vp.decisionReason || "--"}</div>
       </div>
+
+      <!-- 交互式账户总资金 & 三方案精确头寸计算器 -->
+      <div style="background:rgba(8,12,20,0.68);border:1px solid rgba(16,185,129,0.32);border-radius:7px;padding:8px 10px;font-size:11.5px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:6px;">
+          <strong style="color:#34d399;">🧮 实盘账户资金 & 定额风控头寸计算器 (实时推演三方案配比)</strong>
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+            <label style="display:flex;align-items:center;gap:4px;color:var(--text-muted);">
+              <span>账户总本金(${cur}):</span>
+              <input type="number" id="calc-acct-cap" value="${a.market === "cn_fut" ? 1000000 : 100000}" step="10000" style="width:96px;background:var(--bg-input);color:#fff;border:1px solid var(--border);border-radius:5px;padding:2px 6px;font-size:11.5px;" />
+            </label>
+            <label style="display:flex;align-items:center;gap:4px;color:var(--text-muted);">
+              <span>单笔最大止损%:</span>
+              <select id="calc-risk-pct" style="background:var(--bg-input);color:#fff;border:1px solid var(--border);border-radius:5px;padding:2px 6px;font-size:11.5px;">
+                <option value="1.0">1.0% (稳健)</option>
+                <option value="1.5" selected>1.5% (机构标准)</option>
+                <option value="2.0">2.0% (进取)</option>
+                <option value="3.0">3.0% (重仓)</option>
+              </select>
+            </label>
+          </div>
+        </div>
+        <div id="calc-sizing-result" style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;"></div>
+      </div>
     `;
+
+    const updateSizingCalc = () => {
+      const cap = Math.max(1000, parseFloat(el("calc-acct-cap")?.value) || (a.market === "cn_fut" ? 1000000 : 100000));
+      const riskPct = parseFloat(el("calc-risk-pct")?.value) || 1.5;
+      const riskBudget = cap * (riskPct / 100.0);
+      const isStk = a.market === "us_stk";
+      const mult = isStk ? 1 : Number(a.multiplier || 100);
+      const stopDist = Math.max(a.price * 0.005, Math.abs(a.price - (tp.stopLoss || a.price * 0.95)));
+      const t2Dist = Math.abs((tp.target2 || a.price * 1.08) - a.price);
+      const riskPerUnit = stopDist * mult;
+      const recUnits = Math.max(1, Math.floor(riskBudget / Math.max(riskPerUnit, 1)));
+      const unitLbl = isStk ? "股" : "手";
+      const directMargin = isStk ? recUnits * a.price : recUnits * a.price * mult * (sz.effectiveLeverage ? 1 / sz.effectiveLeverage : 0.14);
+      const estT2Profit = recUnits * t2Dist * mult;
+      const maxStopLoss = recUnits * riskPerUnit;
+
+      const unitPutMargin = Math.max(1, Number(activeTier.marginReq || a.price * mult * 0.15));
+      const safePutLots = Math.max(1, Math.floor((cap * 0.30) / unitPutMargin));
+      const putTotalPrem = safePutLots * Number(activeTier.contractPremium || 0);
+      const putDailyTheta = safePutLots * Number(activeTier.contractThetaDaily || 0);
+
+      const comboDirectUnits = Math.max(1, Math.floor(recUnits * 0.5));
+      const comboPutLots = Math.max(1, Math.floor(safePutLots * 0.5));
+      const comboPrem = comboPutLots * Number(activeTier.contractPremium || 0);
+      const comboT2Up = comboDirectUnits * t2Dist * mult + comboPrem;
+
+      const resBox = el("calc-sizing-result");
+      if (resBox) {
+        resBox.innerHTML = `
+          <div style="background:rgba(15,23,42,0.75);border-radius:6px;padding:6px 8px;border-left:3px solid #3b82f6;">
+            <div style="color:#93c5fd;font-weight:700;">方案A · 纯直接${isShort ? "做空" : "买多"}</div>
+            <div>建议仓位: <strong class="cyan-txt">${recUnits} ${unitLbl}</strong> (占用 ${cur}${fmtSmart(directMargin)})</div>
+            <div>止损封顶: <span class="bear-txt">-${cur}${fmtSmart(maxStopLoss)}</span> | T2净利: <strong class="bull-txt">+${cur}${fmtSmart(estT2Profit)}</strong></div>
+          </div>
+          <div style="background:rgba(15,23,42,0.75);border-radius:6px;padding:6px 8px;border-left:3px solid #f59e0b;">
+            <div style="color:#fcd34d;font-weight:700;">方案B · 纯卖Put (30%保证金上限)</div>
+            <div>建议张数: <strong class="gold-txt">${safePutLots} 手</strong> (K=${cur}${fmtSmart(activeTier.strike)})</div>
+            <div>总收权利金: <strong class="gold-txt">+${cur}${fmtSmart(putTotalPrem)}</strong> (<span class="bull-txt">+${cur}${fmtSmart(putDailyTheta)}/日</span>)</div>
+          </div>
+          <div style="background:rgba(15,23,42,0.75);border-radius:6px;padding:6px 8px;border-left:3px solid #10b981;">
+            <div style="color:#6ee7b7;font-weight:700;">方案C · 50/50 黄金双核组合</div>
+            <div>配比: <strong>${comboPutLots}手Put + ${comboDirectUnits}${unitLbl}${isShort ? "空单" : "多单"}</strong></div>
+            <div>底仓收租 <strong>+${cur}${fmtSmart(comboPrem)}</strong> · 达T2总赚 <strong class="bull-txt">+${cur}${fmtSmart(comboT2Up)}</strong></div>
+          </div>
+        `;
+      }
+    };
+    updateSizingCalc();
+    el("calc-acct-cap")?.addEventListener("input", updateSizingCalc);
+    el("calc-risk-pct")?.addEventListener("change", updateSizingCalc);
   }
 
   function renderTierCards(detail) {
@@ -1274,7 +1347,19 @@
       } else if (state.mktFilter !== "all" && r.market !== state.mktFilter) {
         return false;
       }
-      if (state.archetypeFilter !== "all" && !r.archetype.includes(state.archetypeFilter)) return false;
+      if (state.archetypeFilter !== "all") {
+        if (state.archetypeFilter.startsWith("OPT:")) {
+          const targetVeh = state.archetypeFilter.slice(4);
+          const curVeh = r.directTrade?.vsPut?.optimalVehicle || "SHORT_PUT";
+          if (targetVeh === "SHORT_PUT") {
+            if (curVeh !== "SHORT_PUT" && curVeh !== "WAIT_OR_DEEP_PUT") return false;
+          } else if (curVeh !== targetVeh) {
+            return false;
+          }
+        } else if (!r.archetype.includes(state.archetypeFilter)) {
+          return false;
+        }
+      }
       if (q) {
         const hay = `${r.symbol} ${r.name} ${r.sector} ${r.exchange} ${r.archetype} ${r.directTrade?.actionBadge || ""} ${r.directTrade?.vsPut?.optimalLabel || ""}`.toLowerCase();
         if (!hay.includes(q)) return false;
@@ -2094,6 +2179,223 @@
     }
   }
 
+  function populateCustomPosDrawer() {
+    const sel = el("cp-inst");
+    if (!sel || !state.data || !state.data.all) return;
+    const curVal = sel.value || state.selectedId || "CN_FUT:IM0";
+    sel.innerHTML = state.data.all
+      .map((r) => `<option value="${r.id}">${r.name} (${r.symbol} · ${r.marketLabel})</option>`)
+      .join("");
+    if (state.data.all.some((r) => r.id === curVal)) {
+      sel.value = curVal;
+    }
+    prefillCustomPosInputs();
+  }
+
+  function prefillCustomPosInputs() {
+    if (!state.data || !state.data.all) return;
+    const instId = el("cp-inst")?.value || state.selectedId;
+    const strat = el("cp-strategy")?.value || "SHORT_PUT";
+    const row = state.data.all.find((r) => r.id === instId) || state.data.all[0];
+    if (!row) return;
+    const t = getActiveTier(row);
+    const dt = row.directTrade || {};
+    const tp = dt.tradePlan || {};
+    const isDirect = ["LONG_STOCK", "LONG_FUTURES", "SHORT_FUTURES"].includes(strat);
+
+    if (el("cp-spot")) el("cp-spot").value = row.price;
+    if (isDirect) {
+      if (el("cp-strike")) el("cp-strike").value = tp.stopLoss || Number((row.price * 0.94).toFixed(2));
+      if (el("cp-long-strike")) el("cp-long-strike").value = tp.target2 || Number((row.price * 1.1).toFixed(2));
+      if (el("cp-premium")) el("cp-premium").value = row.price;
+    } else if (strat === "BULL_PUT_SPREAD") {
+      if (el("cp-strike")) el("cp-strike").value = t.strike;
+      if (el("cp-long-strike")) el("cp-long-strike").value = t.bullPutSpread?.longStrike || Number((t.strike * 0.94).toFixed(2));
+      if (el("cp-premium")) el("cp-premium").value = t.bullPutSpread?.netCredit || Number((t.premium * 0.72).toFixed(2));
+    } else {
+      if (el("cp-strike")) el("cp-strike").value = t.strike;
+      if (el("cp-long-strike")) el("cp-long-strike").value = "";
+      if (el("cp-premium")) el("cp-premium").value = t.premium;
+    }
+  }
+
+  async function submitCustomPosition() {
+    if (!state.data || !state.data.all) return;
+    const instId = el("cp-inst")?.value || state.selectedId || "CN_FUT:IM0";
+    const strat = el("cp-strategy")?.value || "SHORT_PUT";
+    const row = state.data.all.find((r) => r.id === instId) || state.data.all[0];
+    const spot = parseFloat(el("cp-spot")?.value) || row.price;
+    const strike = parseFloat(el("cp-strike")?.value) || row.recommendedTier.strike;
+    const longStrike = parseFloat(el("cp-long-strike")?.value) || null;
+    const prem = parseFloat(el("cp-premium")?.value) || row.recommendedTier.premium;
+    const lots = Math.max(1, parseInt(el("cp-lots")?.value, 10) || 1);
+    const dte = Math.max(1, parseInt(el("cp-dte")?.value, 10) || 30);
+
+    try {
+      const payload = {
+        instId: instId,
+        strategyType: strat,
+        strike: strike,
+        longStrike: longStrike,
+        entrySpot: spot,
+        entryPremium: prem,
+        ivPct: row.atmIvPct,
+        dte: dte,
+        lots: lots,
+        note: `手动录入实盘头寸 (${strat})`,
+      };
+      const resp = await fetch("/api/portfolio/add", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const json = await resp.json();
+      const tracker = json.tracker || json;
+      if (tracker && tracker.positions) {
+        state.portfolioData = tracker;
+        renderPortfolioSection(tracker);
+        loadDailyBriefing();
+        if (el("custom-pos-drawer")) el("custom-pos-drawer").style.display = "none";
+      }
+    } catch (err) {
+      console.error("submitCustomPosition error:", err);
+    }
+  }
+
+  function downloadCsvFile(filename, headers, rowsData) {
+    const esc = (v) => {
+      const s = v === null || v === undefined ? "" : String(v);
+      return `"${s.replace(/"/g, '""')}"`;
+    };
+    const csvLines = [headers.map(esc).join(",")];
+    rowsData.forEach((r) => {
+      csvLines.push(r.map(esc).join(","));
+    });
+    const bom = "\uFEFF";
+    const blob = new Blob([bom + csvLines.join("\r\n")], { type: "text/csv;charset=utf-8;" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  }
+
+  function exportPortfolioCsv() {
+    const positions = state.portfolioData?.positions || [];
+    if (!positions.length) return;
+    const headers = [
+      "品种代码",
+      "品种名称",
+      "市场",
+      "策略类型",
+      "手数",
+      "开仓标的价格",
+      "最新现价",
+      "行权价K/止损价",
+      "保护腿K2/目标价",
+      "剩余DTE",
+      "安全垫%",
+      "Delta",
+      "开仓权利金/成本",
+      "现值",
+      "收益捕获%",
+      "R倍数",
+      "每日Theta",
+      "浮动盈亏",
+      "雷达信号",
+      "处置建议",
+    ];
+    const rows = positions.map((p) => [
+      p.symbol,
+      p.name,
+      p.market,
+      p.strategyType || p.strategy || "SHORT_PUT",
+      p.lots,
+      p.entrySpot,
+      p.spot ?? p.currentSpot,
+      p.strike,
+      p.longStrike || "",
+      p.remDte,
+      p.otmPct ?? p.liveOtmPct,
+      p.currentDelta ?? p.liveDelta,
+      p.entryPremium ?? p.entryPrice,
+      p.currentPremium ?? p.currentOptPrice,
+      p.capturePct ?? p.profitCapturedPct,
+      p.rMultiple,
+      p.dailyThetaTotal ?? p.liveThetaDaily,
+      p.unrealizedPnl,
+      p.signalLabel || p.actionBadge,
+      p.actionDetail || "",
+    ]);
+    downloadCsvFile(`ShortPut_Portfolio_${new Date().toISOString().slice(0, 10)}.csv`, headers, rows);
+  }
+
+  function exportScreenerCsv() {
+    if (!state.data || !state.data.all) return;
+    const headers = [
+      "排名",
+      "代码",
+      "品种名称",
+      "市场",
+      "板块",
+      "卖Put评分",
+      "直买/做空评分",
+      "直买方向",
+      "最优工具(直买vs卖Put)",
+      "卖Put策略类型",
+      "最新现价",
+      "近1周%",
+      "RSI(14)",
+      "5年分位%",
+      "平值隐波IV%",
+      "推荐卖Put行权价K",
+      "安全垫OTM%",
+      "卖Put盈亏平衡点",
+      "单手权利金",
+      "双轨胜率PoP%",
+      "保证金年化%",
+      "直买止损价(2xATR)",
+      "直买T2波段目标价",
+      "直买盈亏比R:R",
+      "踏空临界点(S+P)",
+    ];
+    const rows = state.data.all.map((r, idx) => {
+      const t = getActiveTier(r);
+      const dt = r.directTrade || {};
+      const tp = dt.tradePlan || {};
+      const vp = dt.vsPut || {};
+      return [
+        idx + 1,
+        r.symbol,
+        r.name,
+        r.marketLabel,
+        r.sector,
+        r.putScore,
+        dt.directScore || "",
+        dt.actionBadge || "",
+        vp.optimalLabel || "",
+        r.archetype,
+        r.price,
+        r.ret1wPct,
+        r.rsi14,
+        r.pct5y,
+        r.atmIvPct,
+        t.strike,
+        t.otmPct,
+        t.breakeven,
+        t.contractPremium,
+        t.popPct,
+        t.annReturnMarginPct,
+        tp.stopLoss || "",
+        tp.target2 || "",
+        tp.rrRatioT2 || "",
+        vp.upsideCrossoverPx || "",
+      ];
+    });
+    downloadCsvFile(`ShortPut_DirectTrade_79Varieties_${new Date().toISOString().slice(0, 10)}.csv`, headers, rows);
+  }
+
   async function removePortfolioPos(posId) {
     try {
       const resetDefault = posId === "RESET_DEFAULT";
@@ -2313,6 +2615,39 @@
 
     el("btn-ws-add-direct")?.addEventListener("click", () => {
       addCurrentToPortfolio("direct_trade");
+    });
+
+    el("btn-toggle-custom-pos")?.addEventListener("click", () => {
+      const drawer = el("custom-pos-drawer");
+      if (!drawer) return;
+      const isHidden = drawer.style.display === "none" || !drawer.style.display;
+      drawer.style.display = isHidden ? "block" : "none";
+      if (isHidden) populateCustomPosDrawer();
+    });
+
+    el("btn-close-custom-pos")?.addEventListener("click", () => {
+      const drawer = el("custom-pos-drawer");
+      if (drawer) drawer.style.display = "none";
+    });
+
+    el("cp-inst")?.addEventListener("change", () => {
+      prefillCustomPosInputs();
+    });
+
+    el("cp-strategy")?.addEventListener("change", () => {
+      prefillCustomPosInputs();
+    });
+
+    el("btn-submit-custom-pos")?.addEventListener("click", () => {
+      submitCustomPosition();
+    });
+
+    el("btn-export-pf-csv")?.addEventListener("click", () => {
+      exportPortfolioCsv();
+    });
+
+    el("btn-export-screener-csv")?.addEventListener("click", () => {
+      exportScreenerCsv();
     });
 
     el("btn-reset-portfolio")?.addEventListener("click", () => {
