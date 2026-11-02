@@ -206,6 +206,7 @@ def analyze_direct_underlying_trade(
     put_score: float,
     target_dte: int = 30,
     basis_info: Optional[Dict[str, Any]] = None,
+    pro_metrics: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
     Compute a complete institutional analysis for directly buying/selling the underlying
@@ -399,7 +400,16 @@ def analyze_direct_underlying_trade(
             basis_adj = float(basis_info.get("directShortAdj") or 0.0)
         basis_note = f"【期现差价：{basis_info.get('badge', '')}】"
 
-    raw_direct_score = f_trend + f_val + f_rr + f_emp + f_cap + basis_adj
+    pro_adj = 0.0
+    if pro_metrics:
+        s_adj = pro_metrics.get("scoreAdjustments") or {}
+        pro_adj = float(s_adj.get("longAdj" if eff_dir == "LONG" else "shortAdj") or 0.0) * 0.65
+        fl_b = (pro_metrics.get("oiVolFlow") or {}).get("shortBadge", "")
+        adx_b = (pro_metrics.get("adxInfo") or {}).get("shortBadge", "")
+        if fl_b or adx_b:
+            basis_note += f"【量仓/趋势强度：{fl_b} · {adx_b}】"
+
+    raw_direct_score = f_trend + f_val + f_rr + f_emp + f_cap + basis_adj + pro_adj
     if direction == "NEUTRAL_BEAR":
         # US stock in a bear channel: discourage buying the falling knife
         raw_direct_score = min(raw_direct_score, 58.0)

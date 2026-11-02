@@ -33,6 +33,7 @@ from data_engine import (
 )
 from http_utils import cached, get_week_context, load_pickle, now_bj, save_pickle
 from options_math import build_payoff_curve, build_put_tiers, compute_vol_skew_and_term
+from pro_indicators import compute_cross_market_parity_map, compute_pro_indicators
 from spot_futures_engine import analyze_direct_underlying_trade
 from universe import ALL_INSTRUMENTS, get_instrument
 
@@ -565,6 +566,7 @@ def analyze_single_instrument(
     macro_regime: Dict[str, Any],
     target_dte: int = 30,
     real_iv_entry: Optional[Dict[str, Any]] = None,
+    parity_entry: Optional[Dict[str, Any]] = None,
 ) -> Optional[Dict[str, Any]]:
     if not bars or len(bars) < 35:
         return None
@@ -944,6 +946,26 @@ def analyze_single_instrument(
         if trend_regime not in ("破位急跌飞刀", "空头阴跌通道"):
             total_score = round(max(22.0, min(98.0, total_score + put_basis_adj)), 1)
 
+    # Compute 5 Core Institutional Indicators (OI/Vol Flow, ADX14, Cross-Market Parity, Put OI Wall, Downside Tail Risk)
+    pro_metrics = compute_pro_indicators(
+        inst=inst,
+        bars=bars,
+        spot=spot,
+        ma20=ma20,
+        ma60=ma60,
+        boll_low=boll_low,
+        atr=atr,
+        hv20=hv20,
+        ret_1w=ret_1w,
+        ret_1m=ret_1m,
+        cost_info=cost_info,
+        rec_tier=rec_tier,
+        parity_entry=parity_entry,
+    )
+    pro_put_adj = float((pro_metrics.get("scoreAdjustments") or {}).get("putAdj") or 0.0)
+    if trend_regime not in ("破位急跌飞刀", "空头阴跌通道"):
+        total_score = round(max(22.0, min(98.5, total_score + pro_put_adj * 0.65)), 1)
+
     # Classify Strategy Archetype & Verdict Badge
     archetype, badge_tone, thesis_tags = _classify_archetype(
         inst=inst,
@@ -1008,6 +1030,7 @@ def analyze_single_instrument(
         put_score=total_score,
         target_dte=target_dte,
         basis_info=basis_info,
+        pro_metrics=pro_metrics,
     )
 
     playbook = _build_weekly_playbook(
@@ -1031,6 +1054,7 @@ def analyze_single_instrument(
         target_dte=target_dte,
         direct_trade=direct_trade,
         basis_info=basis_info,
+        pro_metrics=pro_metrics,
     )
 
     return {
@@ -1078,6 +1102,7 @@ def analyze_single_instrument(
         "supports": supports,
         "cost": cost_info,
         "basis": basis_info,
+        "proMetrics": pro_metrics,
         "moatNote": inst.get("moat_note", ""),
         "putScore": total_score,
         "scoreBreakdown": {
@@ -1207,6 +1232,7 @@ def _build_weekly_playbook(
     target_dte: int,
     direct_trade: Optional[Dict[str, Any]] = None,
     basis_info: Optional[Dict[str, Any]] = None,
+    pro_metrics: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     rec = tiers[rec_key]
     cons = tiers["conservative"]
@@ -1238,6 +1264,14 @@ def _build_weekly_playbook(
             f"【期现差价/基差】{basis_info.get('spotRefName', '现货锚')} {cur}{basis_info.get('spotRefPrice', spot):g}，"
             f"{basis_info.get('badge', '')}。"
         )
+    if pro_metrics:
+        fl = (pro_metrics.get("oiVolFlow") or {}).get("badge", "")
+        adx_b = (pro_metrics.get("adxInfo") or {}).get("badge", "")
+        par = pro_metrics.get("parityInfo") or {}
+        par_b = f" {par.get('badge', '')}。" if par.get("available") else ""
+        wall_b = (pro_metrics.get("optStructure") or {}).get("badge", "")
+        tail_b = (pro_metrics.get("tailRisk") or {}).get("badge", "")
+        basis_str += f"【量价仓与高阶因子】{fl}；{adx_b}；{wall_b}；{tail_b}。{par_b}"
 
     if cost_info:
         why_now = (
@@ -1407,6 +1441,7 @@ def get_weekly_recommendations(
         bars_map = ensure_all_bars_loaded(force=force)
         real_iv_map = get_real_iv_map(target_dte=week_ctx["targetDte"], macro_regime=macro_regime, force=force)
         corr_map = _compute_60d_corr_map(bars_map, window=60)
+        parity_map = compute_cross_market_parity_map(bars_map, window=60)
 
         all_rows: List[Dict[str, Any]] = []
         for inst in ALL_INSTRUMENTS:
@@ -1419,6 +1454,7 @@ def get_weekly_recommendations(
                 macro_regime,
                 target_dte=week_ctx["targetDte"],
                 real_iv_entry=real_iv_map.get(inst["id"]),
+                parity_entry=parity_map.get(inst["id"]),
             )
             if row:
                 all_rows.append(row)

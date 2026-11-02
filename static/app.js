@@ -228,6 +228,8 @@
           <div class="pc-tags">
             <span class="mini-tag" style="${r.isRealIv ? 'border-color:rgba(16,185,129,0.45);color:#34d399;' : ''}">${r.ivSource || "⚪ 估算IV"}</span>
             ${r.basis?.available ? `<span class="mini-tag" style="border-color:rgba(56,189,248,0.45);color:${r.basis.tone === 'bull' ? '#34d399' : r.basis.tone === 'bear' ? '#f87171' : '#38bdf8'};" title="${r.basis.badge}">${r.basis.shortBadge}</span>` : ""}
+            ${r.proMetrics?.oiVolFlow ? `<span class="mini-tag" style="border-color:rgba(168,85,247,0.45);color:#c084fc;" title="${r.proMetrics.oiVolFlow.badge}">${r.proMetrics.oiVolFlow.shortBadge}</span>` : ""}
+            ${r.proMetrics?.adxInfo ? `<span class="mini-tag" title="${r.proMetrics.adxInfo.badge}">${r.proMetrics.adxInfo.shortBadge}</span>` : ""}
             ${tagsHtml}
             <span class="mini-tag">${subYield}</span>
           </div>
@@ -331,6 +333,8 @@
           <div class="pc-tags">
             <span class="mini-tag" style="border-color:rgba(245,158,11,0.45);color:#fbbf24;">${vp.optimalLabel || "工具对比"}</span>
             ${r.basis?.available ? `<span class="mini-tag" style="border-color:rgba(56,189,248,0.45);color:${r.basis.tone === 'bull' ? '#34d399' : r.basis.tone === 'bear' ? '#f87171' : '#38bdf8'};" title="${r.basis.spotRefName}: ${cur}${fmtSmart(r.basis.spotRefPrice)}">${r.basis.badge}</span>` : ""}
+            ${r.proMetrics?.oiVolFlow ? `<span class="mini-tag" style="border-color:rgba(168,85,247,0.45);color:#c084fc;" title="${r.proMetrics.oiVolFlow.badge}">${r.proMetrics.oiVolFlow.shortBadge}</span>` : ""}
+            ${r.proMetrics?.adxInfo ? `<span class="mini-tag" title="${r.proMetrics.adxInfo.badge}">${r.proMetrics.adxInfo.shortBadge}</span>` : ""}
             <span class="mini-tag">卖Put评分 ${fmtNum(r.putScore, 1)}分</span>
             <span class="mini-tag">有效杠杆 ${fmtNum(dt.sizing?.effectiveLeverage, 1)}x</span>
           </div>
@@ -813,6 +817,26 @@
         ? `<div style="margin-top:8px;padding:7px 10px;border-radius:6px;background:rgba(239,68,68,0.12);border:1px solid rgba(239,68,68,0.35);color:#fca5a5;font-size:11.5px;line-height:1.45;">${a.riskNotes.join("<br/>")}</div>`
         : "";
 
+    const pm = a.proMetrics || {};
+    let proBanner = "";
+    if (pm.oiVolFlow || pm.adxInfo) {
+      const fl = pm.oiVolFlow || {};
+      const adx = pm.adxInfo || {};
+      const par = pm.parityInfo || {};
+      const optW = pm.optStructure || {};
+      const tl = pm.tailRisk || {};
+      proBanner = `
+        <div style="margin-top:8px;padding:8px 10px;border-radius:6px;background:rgba(59,130,246,0.08);border:1px solid rgba(59,130,246,0.3);font-size:11.5px;line-height:1.6;">
+          <div style="color:#60a5fa;font-weight:700;margin-bottom:3px;">🧭 五维高阶机构量化博弈矩阵</div>
+          <div>① <strong>量价仓资金流向：</strong>${fl.badge || "--"}</div>
+          <div>② <strong>ADX趋势强度裁判：</strong>${adx.badge || "--"}</div>
+          ${par.available ? `<div>③ <strong>内外盘联动比价：</strong>${par.badge}</div>` : ""}
+          <div>④ <strong>期权持仓支撑墙：</strong>${optW.badge || "--"}</div>
+          <div>⑤ <strong>下行波动与跳空：</strong>${tl.badge || "--"}</div>
+        </div>
+      `;
+    }
+
     el("ws-factor-bars").innerHTML =
       factors
         .map((f) => {
@@ -829,7 +853,7 @@
         </div>
       `;
         })
-        .join("") + corrBanner + riskBanner;
+        .join("") + proBanner + corrBanner + riskBanner;
 
     // Price Ladder comparing Spot, Supports, Costs, and Strike
     const sup = a.supports || {};
@@ -847,6 +871,20 @@
       { label: "◇ 卖Put到期盈亏平衡点", price: activeTier.breakeven, cls: "is-strike" },
     ];
 
+    if (pm.optStructure && pm.optStructure.putOiWallStrike) {
+      ladderItems.push({
+        label: "🧱 期权最大Put持仓墙 (OI Wall)",
+        price: pm.optStructure.putOiWallStrike,
+        cls: "is-strike",
+      });
+    }
+    if (pm.parityInfo && pm.parityInfo.available && pm.parityInfo.parityAnchorPx) {
+      ladderItems.push({
+        label: `🌏 内外盘折算均衡锚 (${pm.parityInfo.shortBadge || "比价锚"})`,
+        price: pm.parityInfo.parityAnchorPx,
+        cls: "is-cost",
+      });
+    }
     if (a.basis && a.basis.available && a.basis.spotRefPrice) {
       ladderItems.push({
         label: `▲ ${a.basis.spotRefName || "现货/近月锚"} (${a.basis.shortBadge || "期现锚"})`,
@@ -1464,6 +1502,9 @@
         if (r.basis && r.basis.available) {
           const bCol = r.basis.tone === "bull" ? "#34d399" : r.basis.tone === "bear" ? "#f87171" : "#38bdf8";
           costCell += `<div style="font-size:10.5px;color:${bCol};margin-top:2px;" title="${r.basis.spotRefName}: ${cur}${fmtSmart(r.basis.spotRefPrice)} · ${r.basis.badge}">期现: ${r.basis.shortBadge}</div>`;
+        }
+        if (r.proMetrics?.oiVolFlow) {
+          costCell += `<div style="font-size:10px;color:#c084fc;margin-top:1px;" title="${r.proMetrics.oiVolFlow.badge} | ${r.proMetrics.adxInfo?.badge || ''}">${r.proMetrics.oiVolFlow.shortBadge} · ${r.proMetrics.adxInfo?.shortBadge || ""}</div>`;
         }
 
         return `
