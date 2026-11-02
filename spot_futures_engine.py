@@ -231,17 +231,18 @@ def analyze_direct_underlying_trade(
     # 1. Determine Primary Directional Bias (LONG vs SHORT vs NEUTRAL)
     # -----------------------------------------------------------------------
     # Futures support two-way trading (做多 & 做空).
-    # US Stocks/ETFs primarily focus on Direct Long (正股做多), but flag Short/Hedge in confirmed bear breakdowns.
-    is_bear_trend = trend_regime in ("空头阴跌通道", "破位急跌飞刀") or (
-        spot < ma20 and ma20 < ma60 and ma60_slope_pct < -0.9 and ret_1m < -3.5
-    )
-    is_overbought_top = pct_5y >= 88.0 and rsi >= 67.0 and (
-        not cost_info or cost_info.get("vsPrimaryPct", 0.0) >= 25.0
+    # CRITICAL RULE: Only classify as SHORT (顺势做空) when the contract is genuinely in a
+    # bearish/downtrend structure (spot < MA20 and MAs sloping down / bearish alignment).
+    # NEVER classify a bull trend (spot > MA20 > MA60) as SHORT!
+    is_confirmed_downtrend = (
+        trend_regime in ("空头阴跌通道", "破位急跌飞刀")
+        or (spot < ma20 and ma20 < ma60 and (ma20_slope_pct < -0.2 or ma60_slope_pct < -0.2))
+        or (spot < ma20 and ma20_slope_pct < -0.8 and ret_1m < -3.0)
     )
 
-    if is_futures and (is_bear_trend or is_overbought_top):
+    if is_futures and is_confirmed_downtrend:
         direction = "SHORT"
-    elif not is_futures and is_bear_trend:
+    elif not is_futures and is_confirmed_downtrend:
         direction = "NEUTRAL_BEAR"
     else:
         direction = "LONG"
@@ -335,17 +336,19 @@ def analyze_direct_underlying_trade(
         elif ma20_slope_pct < -2.0:
             f_trend -= 2.5
     else:
-        # Short trend scoring
+        # Short trend scoring (pure trend-following in bearish / downtrend structure)
         if trend_regime == "空头阴跌通道":
-            f_trend = 26.5
+            f_trend = 27.5
         elif trend_regime == "破位急跌飞刀":
-            f_trend = 24.0 if rsi >= 28.0 else 19.0  # Watch short-squeeze bounce if RSI < 28
-        elif is_overbought_top:
-            f_trend = 22.5
+            f_trend = 25.0 if rsi >= 26.0 else 18.5  # Watch short-squeeze bounce if RSI < 26
+        elif spot < ma20 and ma20 < ma60:
+            f_trend = 25.8
         else:
-            f_trend = 14.0
-        if ma20_slope_pct < -1.5 and ma60_slope_pct < -1.0:
+            f_trend = 22.0
+        if ma20_slope_pct < -1.0 and ma60_slope_pct < -0.5:
             f_trend += 2.2
+        elif ma20_slope_pct < -0.5:
+            f_trend += 1.2
     f_trend = _clamp(f_trend, 5.0, 30.0)
 
     # Factor 2: Fundamental Cost & Valuation Margin (0 - 25 pts)
@@ -361,13 +364,14 @@ def analyze_direct_underlying_trade(
         else:
             f_val = _interp(low_pct_blend, [(15.0, 22.0), (40.0, 18.5), (65.0, 14.5), (90.0, 9.5)])
     else:
-        # For Short trades: higher price vs cost & higher 5Y percentile = more room to fall!
+        # For trend-following Short trades:
+        # Best short candidates are in a confirmed downtrend AND still have ample room above extreme cash-cost floor!
+        # If already crushed >8% below cash cost AND at <5% 5Y percentile (e.g. LH0/SA0), downside is compressed.
         if cost_info and cost_info.get("anchorValid", True):
             vp = float(cost_info["vsPrimaryPct"])
-            # Caution: if already >10% below cash cost, downside room is compressed
-            f_val = _interp(vp, [(-15.0, 9.5), (-3.0, 13.5), (10.0, 18.5), (30.0, 22.5), (55.0, 24.5)])
+            f_val = _interp(vp, [(-15.0, 11.5), (-8.0, 14.5), (-3.0, 20.5), (8.0, 23.0), (25.0, 24.5)])
         else:
-            f_val = _interp(low_pct_blend, [(15.0, 11.0), (45.0, 16.5), (75.0, 21.5), (92.0, 24.0)])
+            f_val = _interp(low_pct_blend, [(8.0, 12.5), (25.0, 19.5), (55.0, 22.8), (85.0, 24.5)])
     f_val = _clamp(f_val, 5.0, 25.0)
 
     # Factor 3: Risk-Reward Ratio & Stop Structure (0 - 20 pts)
@@ -462,19 +466,26 @@ def analyze_direct_underlying_trade(
     # 6. Action Signal Badge & 1% Account Risk Position Sizing
     # -----------------------------------------------------------------------
     if direction == "SHORT":
-        if direct_score >= 78.0:
+        if direct_score >= 76.0:
             sig_badge = "🔴 强力顺势做空 (期货)"
             sig_tone = "bear"
         else:
-            sig_badge = "🟠 逢高轻仓试空 (期货)"
+            sig_badge = "🟠 逢高顺势试空 (期货)"
             sig_tone = "gold"
         action_type = "SHORT_FUTURES"
         action_label = "做空期货"
+        if spot < ma20 and ma20 < ma60 and ma20_slope_pct < -1.0:
+            setup_archetype = f"均线空头排列 · 顺势主跌段 (MA20斜率 {ma20_slope_pct:+.1f}%)"
+        elif trend_regime == "空头阴跌通道":
+            setup_archetype = f"空头阴跌通道 · 反抽MA20做空 (近1月 {ret_1m:+.1f}%)"
+        else:
+            setup_archetype = f"空头破位下行 · 顺势跟空 (近1月 {ret_1m:+.1f}%)"
     elif direction == "NEUTRAL_BEAR":
         sig_badge = "⚪ 空头未企稳·暂缓买多"
         sig_tone = "neutral"
         action_type = "WAIT"
         action_label = "观望防飞刀"
+        setup_archetype = "空头通道未企稳 · 等待右侧信号"
     else:
         if direct_score >= 83.0:
             sig_badge = f"🟢 强烈推荐做多 ({'正股/ETF' if mkt == 'us_stk' else '期货'})"
@@ -487,6 +498,16 @@ def analyze_direct_underlying_trade(
             sig_tone = "gold"
         action_type = "LONG_STOCK" if mkt == "us_stk" else "LONG_FUTURES"
         action_label = "买多正股/ETF" if mkt == "us_stk" else "做多期货"
+        if trend_regime == "多头趋势回调甜点":
+            setup_archetype = "多头回踩MA20 · 顺势低吸甜点"
+        elif trend_regime == "多头上升通道":
+            setup_archetype = f"均线多头排列 · 顺势主升浪 (MA20斜率 {ma20_slope_pct:+.1f}%)"
+        elif trend_regime == "底部企稳筑底":
+            setup_archetype = "成本底右侧放量 · 筑底反转做多"
+        elif trend_regime == "回调测试支撑":
+            setup_archetype = "回踩关键结构支撑 · 博弈波段反弹"
+        else:
+            setup_archetype = f"{trend_regime} · 逢低分批布局"
 
     # Position sizing based on 100,000 reference capital ($100k for US, ¥300k for CN futures) risking 1.5% per trade
     ref_capital = 100000.0 if mkt == "us_stk" else (150000.0 if mkt == "us_fut" else 300000.0)
@@ -515,6 +536,9 @@ def analyze_direct_underlying_trade(
         "actionLabel": action_label,
         "directScore": direct_score,
         "signalBadge": sig_badge,
+        "actionBadge": sig_badge,
+        "setupArchetype": setup_archetype,
+        "unitLabel": unit_name,
         "signalTone": sig_tone,
         "scoreBreakdown": {
             "trend": round(f_trend, 1),   # /30

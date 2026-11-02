@@ -1431,15 +1431,6 @@ def get_weekly_recommendations(
             key=lambda x: (x.get("directTrade") or {}).get("directScore", 0),
             reverse=True,
         )
-        # If fewer than 6 pure SHORT futures exist in current bull/range market, append highest-percentile/lowest-putScore futures with overbought/resistance setup
-        if len(short_fut_candidates) < 6:
-            have_short_ids = {r["id"] for r in short_fut_candidates}
-            extra_short = sorted(
-                [r for r in (us_fut_list + cn_fut_list) if r["id"] not in have_short_ids],
-                key=lambda x: (x.get("pct5y", 50.0) * 0.5 + x.get("rsi14", 50.0) * 0.5 - x.get("putScore", 70.0) * 0.3),
-                reverse=True,
-            )
-            short_fut_candidates.extend(extra_short[: 6 - len(short_fut_candidates)])
 
         top_direct_us_stk = long_stk_candidates[:6]
         top_direct_fut_long = long_fut_candidates[:6]
