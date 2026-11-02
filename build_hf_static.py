@@ -40,7 +40,7 @@ def build_static_bundle() -> None:
         if not bars:
             continue
         dp = int(inst.get("dp", 2))
-        kline_bars = bars[-180:]  # 180 trading days (~9 months) for crisp chart + compact size
+        kline_bars = bars[-130:]  # 130 trading days (~6 months) for crisp chart + fast static load
         closes = [b["c"] for b in kline_bars]
         all_closes = [b["c"] for b in bars]
         offset = len(all_closes) - len(kline_bars)
@@ -98,7 +98,7 @@ def build_static_bundle() -> None:
             "scoreBuckets": bt_res.get("scoreBuckets", []),
             "stopLossComparison": bt_res.get("stopLossComparison", {}),
             "cohorts": bt_res.get("cohorts", []),
-            "records": bt_res.get("records", []) if c_num == 104 else [],
+            "records": bt_res.get("records", [])[:360] if c_num == 104 else [],
         }
     stress_bundle = run_portfolio_stress_test(target_dte=30, force=False)
 
@@ -127,14 +127,14 @@ def build_static_bundle() -> None:
     # Client-side API shim that intercepts fetch('/api/...') and computes everything locally in browser!
     static_shim_js = f"""
 <script>
-window.__STATIC_REC_30__ = {json.dumps(rec_30, ensure_ascii=False)};
-window.__STATIC_KLINES__ = {json.dumps(klines_bundle, ensure_ascii=False)};
-window.__STATIC_CHAINS__ = {json.dumps(chains_bundle, ensure_ascii=False)};
-window.__STATIC_META__ = {json.dumps(inst_meta, ensure_ascii=False)};
-window.__STATIC_PORTFOLIO_DEFAULT__ = {json.dumps(portfolio_bundle, ensure_ascii=False)};
-window.__STATIC_BRIEFING__ = {json.dumps(briefing_bundle, ensure_ascii=False)};
-window.__STATIC_BT_ALL__ = {json.dumps(bt_all, ensure_ascii=False)};
-window.__STATIC_STRESS__ = {json.dumps(stress_bundle, ensure_ascii=False)};
+window.__STATIC_REC_30__ = {json.dumps(rec_30, ensure_ascii=False, separators=(",", ":"))};
+window.__STATIC_KLINES__ = {json.dumps(klines_bundle, ensure_ascii=False, separators=(",", ":"))};
+window.__STATIC_CHAINS__ = {json.dumps(chains_bundle, ensure_ascii=False, separators=(",", ":"))};
+window.__STATIC_META__ = {json.dumps(inst_meta, ensure_ascii=False, separators=(",", ":"))};
+window.__STATIC_PORTFOLIO_DEFAULT__ = {json.dumps(portfolio_bundle, ensure_ascii=False, separators=(",", ":"))};
+window.__STATIC_BRIEFING__ = {json.dumps(briefing_bundle, ensure_ascii=False, separators=(",", ":"))};
+window.__STATIC_BT_ALL__ = {json.dumps(bt_all, ensure_ascii=False, separators=(",", ":"))};
+window.__STATIC_STRESS__ = {json.dumps(stress_bundle, ensure_ascii=False, separators=(",", ":"))};
 
 (function() {{
   const PF_STORAGE_KEY = "short_put_static_pf_v4";
