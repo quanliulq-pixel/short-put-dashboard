@@ -1594,7 +1594,7 @@
   // ---------------- Live Position Tracker, Roll Radar, Macro Shield & Webhook ----------------
   async function loadPortfolioTracker() {
     try {
-      const resp = await fetch("/api/portfolio");
+      const resp = await fetch(`/api/portfolio?dte=${state.dte}`);
       const json = await resp.json();
       if (json.error) throw new Error(json.error);
       state.portfolioData = json;
@@ -1619,47 +1619,31 @@
   function renderPortfolioSection(data) {
     if (!data) return;
     const s = data.summary || {};
+    const cnt = s.totalPositions ?? s.positionCount ?? 0;
+    const stopCnt = s.stopLossCount ?? s.hardStopCount ?? 0;
+    const pnlVal = s.totalUnrealizedPnlCny || 0;
+    const pnlSign = pnlVal >= 0 ? "+" : "";
+    const thetaVal = s.totalDailyThetaCny || 0;
 
-    if (el("pf-count")) {
-      const cnt = s.totalPositions ?? s.positionCount ?? 0;
-      el("pf-count").textContent = `${cnt} 笔`;
-      el("pf-count-sub").textContent = `实时盯市 · 每日Theta收租 +¥${fmtSmart(s.totalDailyThetaCny || 0)}/天`;
+    if (el("pf-total")) el("pf-total").textContent = `${cnt} 笔`;
+    if (el("pf-total-sub")) el("pf-total-sub").textContent = `实时盯市 · 含实盘/模拟期权头寸`;
+    if (el("pf-tp-count")) el("pf-tp-count").textContent = `${s.takeProfitCount || 0} 笔`;
+    if (el("pf-roll-count")) el("pf-roll-count").textContent = `${s.rollDefenseCount || 0} 笔`;
+    if (el("pf-wheel-count")) el("pf-wheel-count").textContent = `${s.wheelCallCount || 0} 笔`;
+    if (el("pf-stop-count")) el("pf-stop-count").textContent = `${stopCnt} 笔`;
+    if (el("pf-theta-pnl")) {
+      el("pf-theta-pnl").innerHTML = `<span class="bull-txt">+¥${fmtSmart(thetaVal)}/D</span> · <span class="${pnlVal >= 0 ? "bull-txt" : "bear-txt"}">${pnlSign}¥${fmtSmart(pnlVal)}</span>`;
     }
-    if (el("pf-pnl")) {
-      const sign = (s.totalUnrealizedPnlCny || 0) >= 0 ? "+" : "";
-      el("pf-pnl").textContent = `${sign}¥${fmtSmart(s.totalUnrealizedPnlCny || 0)}`;
-      el("pf-pnl").className = `bt-val ${(s.totalUnrealizedPnlCny || 0) >= 0 ? "bull-txt" : "bear-txt"}`;
-      el("pf-pnl-sub").textContent = `总保证金占用 ¥${fmtSmart(s.totalMarginCny || 0)}`;
-    }
-    if (el("pf-tp-count")) {
-      el("pf-tp-count").textContent = `${s.takeProfitCount || 0} 笔`;
-      el("pf-tp-sub").textContent = `浮盈 ≥ 65% 建议平仓落袋`;
-    }
-    if (el("pf-roll-count")) {
-      el("pf-roll-count").textContent = `${s.rollDefenseCount || 0} 笔`;
-      el("pf-roll-sub").textContent = `触碰行权价 → Roll Down & Out`;
-    }
-    if (el("pf-stop-count")) {
-      const stopCnt = s.stopLossCount ?? s.hardStopCount ?? 0;
-      el("pf-stop-count").textContent = `${stopCnt} 笔`;
-      el("pf-stop-sub").textContent = `亏损 ≥ 2.5R 强制截断 / 车轮备兑 ${s.wheelCallCount || 0}笔`;
-    }
-    if (el("pf-macro-badge")) {
-      const m = data.macroShield || {};
-      const hiCnt = m.highRiskInWindowCount || 0;
-      const evLen = (m.events || []).length;
-      const mCol = hiCnt >= 2 ? "#f87171" : hiCnt >= 1 ? "#fbbf24" : "#34d399";
-      const mLabel = hiCnt >= 2 ? `🔴 期内 ${hiCnt} 项高危冲击` : hiCnt >= 1 ? `🟡 期内 ${hiCnt} 项宏观节点` : "🟢 常态收租窗口";
-      el("pf-macro-badge").innerHTML = `<span style="color:${mCol}">${mLabel}</span>`;
-      el("pf-macro-sub").textContent = `未来45天内共 ${evLen} 项宏观/交割/长假节点`;
+    if (el("pf-margin-sub")) {
+      el("pf-margin-sub").textContent = `总占用保证金 ¥${fmtSmart(s.totalMarginCny || 0)}`;
     }
 
-    // Render Position Table
-    const tbody = el("portfolio-tbody");
+    // Render Position Table (#pf-positions-tbody in index.html)
+    const tbody = el("pf-positions-tbody") || el("portfolio-tbody");
     if (tbody) {
       const positions = data.positions || [];
       if (!positions.length) {
-        tbody.innerHTML = `<tr><td colspan="12" class="empty-cell">暂无持仓记录，请点击上方按钮将当前品种加入持仓账本</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="11" class="empty-cell">暂无持仓记录，请点击上方按钮将当前品种加入持仓账本</td></tr>`;
       } else {
         tbody.innerHTML = positions
           .map((p) => {
@@ -1673,7 +1657,7 @@
                 : tone === "gold"
                 ? "badge-gold"
                 : "badge-neutral";
-            const pnlSign = p.unrealizedPnl >= 0 ? "+" : "";
+            const posPnlSign = p.unrealizedPnl >= 0 ? "+" : "";
             const rSign = p.rMultiple >= 0 ? "+" : "";
             const strat = p.strategyType || p.strategy || "SHORT_PUT";
             const stratTag =
@@ -1693,6 +1677,10 @@
             const capPct = p.capturePct ?? p.profitCapturedPct ?? 0;
             const liveDelta = p.currentDelta ?? p.liveDelta ?? 0;
             const liveTheta = p.dailyThetaTotal ?? p.liveThetaDaily ?? 0;
+            const strikeText =
+              p.longStrike && Number(p.longStrike) > 0
+                ? `<strong class="gold-txt">${cur}${fmtSmart(p.strike)}</strong><br/><small style="color:#c084fc;">保护腿 ${cur}${fmtSmart(p.longStrike)}</small>`
+                : `<strong class="gold-txt">${cur}${fmtSmart(p.strike)}</strong>`;
 
             let rollOrWheelBox = `<div style="font-size:11.5px;line-height:1.45;">${p.actionDetail || ""}</div>`;
             if (p.rollPlan && (sigCode === "ROLL_DEFENSE" || sigCode === "HARD_STOP")) {
@@ -1715,14 +1703,13 @@
             return `
               <tr data-id="${p.instId}">
                 <td><strong>${p.name}</strong> <span style="color:var(--text-muted)">${p.symbol}</span><br/>${stratTag} <small style="color:var(--text-muted)">${p.lots}手</small></td>
-                <td><small>${openDt} → ${p.expiryDate}</small><br/><strong class="${p.remDte <= 5 ? "gold-txt" : "cyan-txt"}">剩余 ${p.remDte} 天</strong></td>
-                <td class="num gold-txt"><strong>${cur}${fmtSmart(p.strike)}</strong></td>
                 <td class="num">${cur}${fmtSmart(p.entrySpot)} → <strong>${cur}${fmtSmart(curSpot)}</strong></td>
-                <td class="num ${liveOtm >= 2 ? "bull-txt" : "bear-txt"}"><strong>${fmtSignPct(liveOtm, 1)}</strong></td>
+                <td class="num">${strikeText}</td>
+                <td class="num"><small>${openDt} → ${p.expiryDate}</small><br/><strong class="${p.remDte <= 5 ? "gold-txt" : "cyan-txt"}">剩余 ${p.remDte} 天</strong></td>
+                <td class="num ${liveOtm >= 2 ? "bull-txt" : "bear-txt"}"><strong>${fmtSignPct(liveOtm, 1)}</strong><br/><small style="color:var(--text-muted)">Δ=${fmtNum(liveDelta, 2)}</small></td>
                 <td class="num">${cur}${fmtSmart(entryPrem)} → <strong>${cur}${fmtSmart(curPrem)}</strong></td>
-                <td class="num ${capPct >= 50 ? "bull-txt" : capPct < 0 ? "bear-txt" : "gold-txt"}"><strong>${fmtSignPct(capPct, 1)}</strong></td>
-                <td class="num ${p.unrealizedPnl >= 0 ? "bull-txt" : "bear-txt"}"><strong>${pnlSign}${cur}${fmtSmart(p.unrealizedPnl)}</strong><br/><small>(${rSign}${fmtNum(p.rMultiple, 2)}R)</small></td>
-                <td class="num">${fmtNum(liveDelta, 2)}<br/><small class="bull-txt">+${cur}${fmtSmart(liveTheta)}/D</small></td>
+                <td class="num ${capPct >= 50 ? "bull-txt" : capPct < 0 ? "bear-txt" : "gold-txt"}"><strong>${fmtSignPct(capPct, 1)}</strong><br/><small>(${rSign}${fmtNum(p.rMultiple, 2)}R)</small></td>
+                <td class="num"><span class="bull-txt">+${cur}${fmtSmart(liveTheta)}/D</span><br/><strong class="${p.unrealizedPnl >= 0 ? "bull-txt" : "bear-txt"}">${posPnlSign}${cur}${fmtSmart(p.unrealizedPnl)}</strong></td>
                 <td><span class="badge ${badgeCls}">${sigLabel}</span></td>
                 <td style="max-width:340px;white-space:normal;">${rollOrWheelBox}</td>
                 <td><button class="btn-outline btn-del-pos" data-pos-id="${p.posId}" style="padding:3px 8px;font-size:11px;color:#f87171;border-color:rgba(239,68,68,0.35);">移除</button></td>
@@ -1853,14 +1840,14 @@
 
   async function sendWebhookAlert() {
     const urlInput = el("webhook-url-input");
-    const statusEl = el("webhook-status-msg");
+    const statusEl = el("webhook-status-txt") || el("webhook-status-msg");
     const webhookUrl = urlInput?.value?.trim() || "";
     const customText = el("briefing-textarea")?.value || "";
 
     if (!webhookUrl) {
       if (statusEl) {
         statusEl.style.color = "#fbbf24";
-        statusEl.textContent = "⚠️ 请先在输入框粘贴钉钉 / 飞书 / 企业微信机器人的 Webhook 地址（若只需复制战报文字，请点击右侧“复制战报”按钮）";
+        statusEl.textContent = "⚠️ 请先在输入框粘贴钉钉 / 飞书 / 企业微信机器人的 Webhook 地址（若只需复制战报文字，请点击右侧“复制日报文本”按钮）";
       }
       return;
     }
@@ -1928,6 +1915,8 @@
     el("dte-select")?.addEventListener("change", (e) => {
       state.dte = parseInt(e.target.value, 10) || 30;
       loadRecommendations(false);
+      loadPortfolioTracker();
+      loadDailyBriefing();
     });
 
     el("tier-pref-select")?.addEventListener("change", (e) => {
