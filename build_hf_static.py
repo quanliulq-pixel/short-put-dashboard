@@ -1,11 +1,13 @@
 # -*- coding: utf-8 -*-
 """
-Build a 100% Full-Featured Static Version (`huggingface_static/index.html`) for Hugging Face `Static` Spaces.
+Build a 100% Full-Featured Static Version (`huggingface_static/index.html`) for GitHub Pages & Hugging Face Static Spaces.
 Includes:
 - Complete Desktop + iPhone UI (identical to the Flask version)
-- All 79 varieties' weekly recommendations + 1-year daily K-line bars + MA20/MA60/Bollinger Bands
-- Client-side Black-Scholes-Merton & Black-76 option pricing engine (supports switching DTE 7/14/30/45/60, switching 3 tiers, and custom Strike/DTE/IV/Lots simulation with live ECharts Payoff & K-line charts!)
-- Pre-fetched live option chains for CSI 1000 (MO), CSI 300 (IO), SSE 50 (HO), and top US stocks/ETFs.
+- All 79 varieties' weekly Short Put + Direct Stock/Futures Buying/Selling recommendations
+- 1-year daily K-line bars + MA20/MA60/Bollinger Bands
+- Client-side Black-Scholes-Merton & Black-76 option pricing engine + Bull Put Spread + Direct Underlying PnL curves
+- Full Portfolio Tracker + 45-Day Macro Event & Holiday Shield + Interactive Add/Remove/Reset via localStorage
+- Full Daily Briefing & Webhook Push + 52/104-Week Historical Empirical Backtest & Stress Testing
 """
 from __future__ import annotations
 
@@ -13,7 +15,9 @@ import json
 import os
 import re
 
+from backtest_engine import get_historical_review, run_portfolio_stress_test
 from data_engine import ensure_all_bars_loaded, fetch_live_option_chain_sample, get_instrument_bars
+from portfolio_engine import generate_daily_briefing, get_portfolio_tracker, remove_portfolio_position
 from recommender import _std, get_weekly_recommendations
 from universe import ALL_INSTRUMENTS
 
@@ -23,8 +27,8 @@ def build_static_bundle() -> None:
     out_dir = os.path.join(base_dir, "huggingface_static")
     os.makedirs(out_dir, exist_ok=True)
 
-    force = os.environ.get("FORCE_REFRESH", "1") == "1"
-    print(f"1. Computing weekly recommendations (30 DTE base, force={force})...")
+    force = os.environ.get("FORCE_REFRESH", "0") == "1"
+    print(f"1. Computing weekly Short Put + Direct Stock/Futures recommendations (30 DTE base, force={force})...")
     rec_30 = get_weekly_recommendations(target_dte=30, force=force)
 
     print("2. Packing 1-year K-line & technical bands for all 79 varieties...")
@@ -75,9 +79,35 @@ def build_static_bundle() -> None:
         except Exception:
             pass
 
+    print("4. Packing Portfolio Tracker, 45-Day Macro Event Shield & Daily Briefing...")
+    # Ensure default 6 institutional demo positions are seeded cleanly
+    portfolio_bundle = remove_portfolio_position("", reset_default=True)
+    if "tracker" in portfolio_bundle and isinstance(portfolio_bundle["tracker"], dict):
+        portfolio_bundle = portfolio_bundle["tracker"]
+    briefing_bundle = generate_daily_briefing(target_dte=30)
+
+    print("5. Packing Historical Empirical Backtest (12 / 26 / 52 / 104 weeks) & Stress Testing...")
+    bt_all = {}
+    for c_num in (12, 26, 52, 104):
+        bt_res = get_historical_review(hold_trading_days=20, num_cohorts=c_num, force=False)
+        bt_all[str(c_num)] = {
+            "numCohorts": bt_res.get("numCohorts", c_num),
+            "holdTradingDays": bt_res.get("holdTradingDays", 20),
+            "tierStats": bt_res.get("tierStats", {}),
+            "marketStats": bt_res.get("marketStats", {}),
+            "scoreBuckets": bt_res.get("scoreBuckets", []),
+            "stopLossComparison": bt_res.get("stopLossComparison", {}),
+            "cohorts": bt_res.get("cohorts", []),
+            "records": bt_res.get("records", []) if c_num == 104 else [],
+        }
+    stress_bundle = run_portfolio_stress_test(target_dte=30, force=False)
+
     inst_meta = {
         inst["id"]: {
+            "name": inst["name"],
+            "symbol": inst["symbol"],
             "market": inst["market"],
+            "currency": inst.get("currency", "$"),
             "dp": int(inst.get("dp", 2)),
             "multiplier": float(inst.get("multiplier", 100)),
             "margin_rate": float(inst.get("margin_rate", 0.15)),
@@ -101,8 +131,14 @@ window.__STATIC_REC_30__ = {json.dumps(rec_30, ensure_ascii=False)};
 window.__STATIC_KLINES__ = {json.dumps(klines_bundle, ensure_ascii=False)};
 window.__STATIC_CHAINS__ = {json.dumps(chains_bundle, ensure_ascii=False)};
 window.__STATIC_META__ = {json.dumps(inst_meta, ensure_ascii=False)};
+window.__STATIC_PORTFOLIO_DEFAULT__ = {json.dumps(portfolio_bundle, ensure_ascii=False)};
+window.__STATIC_BRIEFING__ = {json.dumps(briefing_bundle, ensure_ascii=False)};
+window.__STATIC_BT_ALL__ = {json.dumps(bt_all, ensure_ascii=False)};
+window.__STATIC_STRESS__ = {json.dumps(stress_bundle, ensure_ascii=False)};
 
 (function() {{
+  const PF_STORAGE_KEY = "short_put_static_pf_v4";
+
   function normCdf(x) {{
     const t = 1 / (1 + 0.2316419 * Math.abs(x));
     const d = 0.3989422804014327 * Math.exp(-x * x / 2);
@@ -145,17 +181,20 @@ window.__STATIC_META__ = {json.dumps(inst_meta, ensure_ascii=False)};
     const probTouchPct = Math.min(98.0, (1.0 - probOtmPct / 100.0) * 195.0);
     return {{ premium: putPrice, breakeven, delta, gamma, theta_daily: thetaDaily, vega, pop_pct: popPct, prob_otm_pct: probOtmPct, prob_touch_pct: probTouchPct }};
   }}
-  function buildPayoff(meta, spot, strike, dte, iv, premium) {{
+  function buildPayoff(meta, spot, strike, dte, iv, premium, spreadInfo) {{
     const isFut = meta.market === "us_fut" || meta.market === "cn_fut";
     const r = meta.market === "cn_fut" ? 0.020 : 0.042;
     const dp = meta.dp;
     const mult = meta.multiplier;
     const lowP = Math.min(spot * 0.78, strike * 0.86);
-    const highP = Math.max(spot * 1.12, strike * 1.16);
+    const highP = Math.max(spot * 1.15, strike * 1.18);
     const nPts = 65;
     const stepP = (highP - lowP) / (nPts - 1);
     const midDte = Math.max(1, Math.floor(dte / 2));
-    const prices = [], expPnl = [], midPnl = [];
+    const prices = [], expPnl = [], midPnl = [], spreadExpPnl = [], underlyingLongPnl = [], underlyingShortPnl = [];
+    const hasSpread = spreadInfo && spreadInfo.longStrike > 0;
+    const longK = hasSpread ? spreadInfo.longStrike : Math.max(meta.strike_step || 1, strike * 0.92);
+    const netCred = hasSpread ? spreadInfo.netCredit : premium * 0.72;
     for (let i = 0; i < nPts; i++) {{
       const p = lowP + i * stepP;
       prices.push(Number(p.toFixed(dp)));
@@ -163,9 +202,16 @@ window.__STATIC_META__ = {json.dumps(inst_meta, ensure_ascii=False)};
       expPnl.push(Number(((premium - intrinsic) * mult).toFixed(1)));
       const midRes = pricePutAndGreeks(p, strike, midDte, iv, r, isFut);
       midPnl.push(Number(((premium - midRes.premium) * mult).toFixed(1)));
+      const spIntrinsic = Math.max(0, strike - p) - Math.max(0, longK - p);
+      spreadExpPnl.push(Number(((netCred - spIntrinsic) * mult).toFixed(1)));
+      underlyingLongPnl.push(Number(((p - spot) * mult).toFixed(1)));
+      underlyingShortPnl.push(Number(((spot - p) * mult).toFixed(1)));
     }}
     return {{
-      prices, expPnl, midPnl,
+      prices, expPnl, midPnl, spreadExpPnl, underlyingLongPnl, underlyingShortPnl,
+      midDte,
+      spreadInfo: spreadInfo || {{ longStrike: Number(longK.toFixed(dp)), netCredit: Number(netCred.toFixed(dp)) }},
+      upsideCrossoverPx: Number((spot + premium).toFixed(dp)),
       breakeven: Number((strike - premium).toFixed(dp)),
       maxProfit: Number((premium * mult).toFixed(1)),
       spot: Number(spot.toFixed(dp)),
@@ -230,6 +276,65 @@ window.__STATIC_META__ = {json.dumps(inst_meta, ensure_ascii=False)};
     return base;
   }}
 
+  function recomputePortfolioSummary(pfObj) {{
+    const positions = pfObj.positions || [];
+    let tpCnt = 0, rollCnt = 0, wheelCnt = 0, stopCnt = 0;
+    let totalThetaCny = 0, totalPnlCny = 0, totalMarginCny = 0;
+    positions.forEach(p => {{
+      const fx = p.currency === "$" ? 7.22 : 1.0;
+      const sig = p.signalCode || p.actionCode || "HOLD_THETA";
+      if (sig === "TAKE_PROFIT") tpCnt++;
+      else if (sig === "ROLL_DEFENSE") rollCnt++;
+      else if (sig === "WHEEL_CALL") wheelCnt++;
+      else if (sig === "HARD_STOP") stopCnt++;
+      totalThetaCny += (Number(p.dailyThetaTotal ?? p.liveThetaDaily ?? 0)) * fx;
+      totalPnlCny += (Number(p.unrealizedPnl || 0)) * fx;
+      totalMarginCny += (Number(p.marginUsed || 0)) * fx;
+    }});
+    pfObj.summary = {{
+      totalPositions: positions.length,
+      positionCount: positions.length,
+      takeProfitCount: tpCnt,
+      rollDefenseCount: rollCnt,
+      wheelCallCount: wheelCnt,
+      stopLossCount: stopCnt,
+      hardStopCount: stopCnt,
+      totalDailyThetaCny: Math.round(totalThetaCny),
+      totalUnrealizedPnlCny: Math.round(totalPnlCny),
+      totalMarginCny: Math.round(totalMarginCny)
+    }};
+    return pfObj;
+  }}
+
+  function getStaticPortfolio() {{
+    try {{
+      const raw = localStorage.getItem(PF_STORAGE_KEY);
+      if (raw) {{
+        const parsed = JSON.parse(raw);
+        if (parsed && Array.isArray(parsed.positions)) {{
+          parsed.macroShield = window.__STATIC_PORTFOLIO_DEFAULT__.macroShield;
+          return recomputePortfolioSummary(parsed);
+        }}
+      }}
+    }} catch (_) {{}}
+    return JSON.parse(JSON.stringify(window.__STATIC_PORTFOLIO_DEFAULT__));
+  }}
+
+  function saveStaticPortfolio(pfObj) {{
+    try {{
+      localStorage.setItem(PF_STORAGE_KEY, JSON.stringify(pfObj));
+    }} catch (_) {{}}
+  }}
+
+  function getStaticBacktest(cohortsNum) {{
+    const key = String(cohortsNum || 52);
+    const bt104 = window.__STATIC_BT_ALL__["104"] || {{}};
+    const target = JSON.parse(JSON.stringify(window.__STATIC_BT_ALL__[key] || window.__STATIC_BT_ALL__["52"] || bt104));
+    const allowedLabels = new Set((target.cohorts || []).map(c => c.cohortLabel));
+    target.records = (bt104.records || []).filter(r => allowedLabels.has(r.cohortLabel));
+    return target;
+  }}
+
   const origFetch = window.fetch.bind(window);
   window.fetch = async function(input, init) {{
     const urlStr = typeof input === "string" ? input : (input && input.url) || "";
@@ -249,8 +354,8 @@ window.__STATIC_META__ = {json.dumps(inst_meta, ensure_ascii=False)};
         const analysis = (recs.all || []).find(r => r.id === id) || recs.all[0];
         const selKey = (tierArg && ["conservative", "balanced", "aggressive"].includes(tierArg)) ? tierArg : (analysis.recommendedTierKey || "balanced");
         const selTier = analysis.tiers[selKey];
-        const meta = window.__STATIC_META__[analysis.id] || {{ market: analysis.market, dp: 2, multiplier: 100, margin_rate: 0.15, iv_skew: 0.12 }};
-        const payoff = buildPayoff(meta, analysis.price, selTier.strike, dte, selTier.ivPct / 100.0, selTier.premium);
+        const meta = window.__STATIC_META__[analysis.id] || {{ market: analysis.market, dp: 2, multiplier: 100, margin_rate: 0.15, iv_skew: 0.12, strike_step: 1 }};
+        const payoff = buildPayoff(meta, analysis.price, selTier.strike, dte, selTier.ivPct / 100.0, selTier.premium, selTier.bullPutSpread);
         const kline = window.__STATIC_KLINES__[analysis.id] || {{ bars: [], ma20: [], ma60: [], bollUp: [], bollLow: [] }};
         return new Response(JSON.stringify({{
           analysis,
@@ -268,7 +373,7 @@ window.__STATIC_META__ = {json.dumps(inst_meta, ensure_ascii=False)};
         const dte = parseInt(sp.get("dte") || "30", 10) || 30;
         const ivPct = parseFloat(sp.get("iv") || "25");
         const lots = Math.max(1, parseInt(sp.get("lots") || "1", 10) || 1);
-        const meta = window.__STATIC_META__[id] || {{ market: "cn_fut", dp: 2, multiplier: 100, margin_rate: 0.15, iv_skew: 0.12 }};
+        const meta = window.__STATIC_META__[id] || {{ market: "cn_fut", dp: 2, multiplier: 100, margin_rate: 0.15, iv_skew: 0.12, strike_step: 1 }};
         const isFut = meta.market === "us_fut" || meta.market === "cn_fut";
         const r = meta.market === "cn_fut" ? 0.020 : 0.042;
         const strikeIv = skewIv(ivPct / 100.0, spot, strike, meta.iv_skew);
@@ -287,10 +392,13 @@ window.__STATIC_META__ = {json.dumps(inst_meta, ensure_ascii=False)};
         const annMargin = rocMargin * (365.0 / Math.max(dte, 1));
         const rocCash = strike > 0 ? (prem / strike) * 100.0 : 0;
         const annCash = rocCash * (365.0 / Math.max(dte, 1));
-        const payoff = buildPayoff(meta, spot, strike, dte, strikeIv, prem);
+        const payoff = buildPayoff(meta, spot, strike, dte, strikeIv, prem, null);
         if (lots !== 1) {{
           payoff.expPnl = payoff.expPnl.map(x => Number((x * lots).toFixed(1)));
           payoff.midPnl = payoff.midPnl.map(x => Number((x * lots).toFixed(1)));
+          payoff.spreadExpPnl = payoff.spreadExpPnl.map(x => Number((x * lots).toFixed(1)));
+          payoff.underlyingLongPnl = payoff.underlyingLongPnl.map(x => Number((x * lots).toFixed(1)));
+          payoff.underlyingShortPnl = payoff.underlyingShortPnl.map(x => Number((x * lots).toFixed(1)));
           payoff.maxProfit = Number((payoff.maxProfit * lots).toFixed(1));
         }}
         return new Response(JSON.stringify({{
@@ -312,6 +420,102 @@ window.__STATIC_META__ = {json.dumps(inst_meta, ensure_ascii=False)};
           payoff
         }}), {{ status: 200, headers: {{ "Content-Type": "application/json" }} }});
       }}
+      if (path === "/api/portfolio") {{
+        return new Response(JSON.stringify(getStaticPortfolio()), {{ status: 200, headers: {{ "Content-Type": "application/json" }} }});
+      }}
+      if (path === "/api/portfolio/add") {{
+        const body = init && init.body ? JSON.parse(init.body) : {{}};
+        const pf = getStaticPortfolio();
+        const iid = body.instId || "CN_FUT:IM0";
+        const row = (window.__STATIC_REC_30__.all || []).find(r => r.id === iid) || window.__STATIC_REC_30__.all[0];
+        const meta = window.__STATIC_META__[iid] || {{ name: row.name, symbol: row.symbol, market: row.market, currency: row.currency, dp: 2, multiplier: 100, margin_rate: 0.15 }};
+        const strat = body.strategyType || "SHORT_PUT";
+        const isDirect = ["LONG_STOCK", "LONG_FUTURES", "SHORT_FUTURES"].includes(strat);
+        const spot = Number(body.entrySpot || row.price);
+        const strike = Number(body.strike || row.recommendedTier.strike);
+        const longStrike = Number(body.longStrike || 0);
+        const lots = Math.max(1, Number(body.lots || 1));
+        const dte = Number(body.dte || 30);
+        const entryPrem = Number(body.entryPremium || row.recommendedTier.premium);
+        const nowStr = new Date().toISOString().slice(0, 10);
+        const expDate = new Date(Date.now() + dte * 86400000).toISOString().slice(0, 10);
+        const newPos = {{
+          posId: "POS-" + Math.random().toString(36).slice(2, 8).toUpperCase(),
+          instId: iid,
+          symbol: meta.symbol,
+          name: meta.name,
+          market: meta.market,
+          currency: meta.currency || row.currency || "$",
+          strategyType: strat,
+          lots: lots,
+          openDate: nowStr,
+          expiryDate: expDate,
+          remDte: dte,
+          entrySpot: spot,
+          spot: spot,
+          strike: strike,
+          longStrike: longStrike,
+          otmPct: isDirect ? Number((Math.abs(spot - strike) / spot * 100).toFixed(2)) : Number(((spot - strike) / spot * 100).toFixed(2)),
+          entryPremium: entryPrem,
+          currentPremium: entryPrem,
+          capturePct: 0.0,
+          rMultiple: 0.0,
+          unrealizedPnl: 0.0,
+          currentDelta: isDirect ? (strat === "SHORT_FUTURES" ? -1.0 : 1.0) : (row.recommendedTier.delta || -0.22),
+          dailyThetaTotal: isDirect ? 0.0 : Number(((row.recommendedTier.contractThetaDaily || 15) * lots).toFixed(1)),
+          marginUsed: Math.round((row.recommendedTier.marginReq || spot * meta.multiplier * 0.15) * lots),
+          signalCode: "HOLD_THETA",
+          signalLabel: isDirect ? "🟢 趋势持仓跟踪中" : "🟢 持有收租 (Theta衰减中)",
+          signalTone: "neutral",
+          actionDetail: isDirect
+            ? `已建仓${{strat === "SHORT_FUTURES" ? "做空" : "做多"}}头寸：现价 ${{meta.currency}}${{spot}}，硬止损位 ${{meta.currency}}${{strike}}，波段目标位 ${{meta.currency}}${{longStrike}}。`
+            : `新开仓安全垫充足，每日稳定赚取 Theta 时间价值，静待权利金衰减至 65% 触发止盈。`,
+          note: body.note || ""
+        }};
+        pf.positions.unshift(newPos);
+        recomputePortfolioSummary(pf);
+        saveStaticPortfolio(pf);
+        return new Response(JSON.stringify(pf), {{ status: 200, headers: {{ "Content-Type": "application/json" }} }});
+      }}
+      if (path === "/api/portfolio/remove") {{
+        const body = init && init.body ? JSON.parse(init.body) : {{}};
+        if (body.resetDefault || body.posId === "RESET_DEFAULT") {{
+          localStorage.removeItem(PF_STORAGE_KEY);
+          return new Response(JSON.stringify(window.__STATIC_PORTFOLIO_DEFAULT__), {{ status: 200, headers: {{ "Content-Type": "application/json" }} }});
+        }}
+        const pf = getStaticPortfolio();
+        pf.positions = (pf.positions || []).filter(p => p.posId !== body.posId);
+        recomputePortfolioSummary(pf);
+        saveStaticPortfolio(pf);
+        return new Response(JSON.stringify(pf), {{ status: 200, headers: {{ "Content-Type": "application/json" }} }});
+      }}
+      if (path === "/api/briefing") {{
+        return new Response(JSON.stringify(window.__STATIC_BRIEFING__), {{ status: 200, headers: {{ "Content-Type": "application/json" }} }});
+      }}
+      if (path === "/api/webhook-push") {{
+        const body = init && init.body ? JSON.parse(init.body) : {{}};
+        const wUrl = (body.webhookUrl || "").trim();
+        const txt = body.text || window.__STATIC_BRIEFING__.text || "";
+        if (!wUrl) {{
+          return new Response(JSON.stringify({{ ok: false, msg: "请先输入 Webhook URL" }}), {{ status: 400, headers: {{ "Content-Type": "application/json" }} }});
+        }}
+        try {{
+          const payload = wUrl.includes("feishu") || wUrl.includes("larksuite")
+            ? {{ msg_type: "text", content: {{ text: txt }} }}
+            : {{ msgtype: "text", text: {{ content: txt }} }};
+          await origFetch(wUrl, {{ method: "POST", mode: "no-cors", headers: {{ "Content-Type": "application/json" }}, body: JSON.stringify(payload) }});
+          return new Response(JSON.stringify({{ ok: true, msg: "已通过浏览器向 Webhook 发送推送请求！" }}), {{ status: 200, headers: {{ "Content-Type": "application/json" }} }});
+        }} catch (e) {{
+          return new Response(JSON.stringify({{ ok: false, msg: "浏览器跨域限制，请点击右侧「复制日报文本」粘贴发送" }}), {{ status: 200, headers: {{ "Content-Type": "application/json" }} }});
+        }}
+      }}
+      if (path === "/api/backtest") {{
+        const cohorts = parseInt(sp.get("cohorts") || "52", 10) || 52;
+        return new Response(JSON.stringify(getStaticBacktest(cohorts)), {{ status: 200, headers: {{ "Content-Type": "application/json" }} }});
+      }}
+      if (path === "/api/stress-test") {{
+        return new Response(JSON.stringify(window.__STATIC_STRESS__), {{ status: 200, headers: {{ "Content-Type": "application/json" }} }});
+      }}
       if (path === "/api/option-chain") {{
         const id = sp.get("id") || "";
         const ch = window.__STATIC_CHAINS__[id] || {{ available: false, note: "云端静态版已将场内Black-76/BSM三档期权定价直接集成至上方行权价矩阵中" }};
@@ -329,6 +533,24 @@ window.__STATIC_META__ = {json.dumps(inst_meta, ensure_ascii=False)};
     }}
     return origFetch(input, init);
   }};
+
+  document.addEventListener("DOMContentLoaded", () => {{
+    const expBtn = document.getElementById("link-export-mobile");
+    if (expBtn) {{
+      expBtn.addEventListener("click", (e) => {{
+        if (window.location.hostname.includes("github.io") || window.location.protocol === "file:") {{
+          e.preventDefault();
+          const blob = new Blob([document.documentElement.outerHTML], {{ type: "text/html;charset=utf-8" }});
+          const a = document.createElement("a");
+          a.href = URL.createObjectURL(blob);
+          a.download = "ShortPut_iPhone_Weekly.html";
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+        }}
+      }});
+    }}
+  }});
 }})();
 </script>
 """
@@ -349,7 +571,7 @@ window.__STATIC_META__ = {json.dumps(inst_meta, ensure_ascii=False)};
     with open(out_file, "w", encoding="utf-8") as f:
         f.write(final_html)
 
-    print(f"Done! Built full-featured Hugging Face Static Space file: {out_file} ({os.path.getsize(out_file):,} bytes)")
+    print(f"Done! Built full-featured GitHub Pages / Static Space file: {out_file} ({os.path.getsize(out_file):,} bytes)")
 
 
 if __name__ == "__main__":
