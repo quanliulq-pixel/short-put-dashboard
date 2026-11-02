@@ -205,6 +205,7 @@ def analyze_direct_underlying_trade(
     rec_put_tier: Dict[str, Any],
     put_score: float,
     target_dte: int = 30,
+    basis_info: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
     Compute a complete institutional analysis for directly buying/selling the underlying
@@ -389,7 +390,16 @@ def analyze_direct_underlying_trade(
     iv_discount_bonus = _interp(iv_rank, [(15.0, 8.8), (45.0, 7.2), (70.0, 5.5), (90.0, 4.2)])
     f_cap = _clamp(iv_discount_bonus + (1.0 if abs(ma20_slope_pct) >= 1.5 else 0.0), 3.0, 10.0)
 
-    raw_direct_score = f_trend + f_val + f_rr + f_emp + f_cap
+    basis_adj = 0.0
+    basis_note = ""
+    if basis_info and basis_info.get("available"):
+        if eff_dir == "LONG":
+            basis_adj = float(basis_info.get("directLongAdj") or 0.0)
+        else:
+            basis_adj = float(basis_info.get("directShortAdj") or 0.0)
+        basis_note = f"【期现差价：{basis_info.get('badge', '')}】"
+
+    raw_direct_score = f_trend + f_val + f_rr + f_emp + f_cap + basis_adj
     if direction == "NEUTRAL_BEAR":
         # US stock in a bear channel: discourage buying the falling knife
         raw_direct_score = min(raw_direct_score, 58.0)
@@ -419,7 +429,7 @@ def analyze_direct_underlying_trade(
         optimal_label = "📉 优先顺势做空期货 (严禁裸卖Put接刀)"
         optimal_tone = "bear"
         decision_reason = (
-            f"当前处于【{trend_regime}】（MA20斜率 {ma20_slope_pct:+.1f}%），裸卖Put面临顺势破位穿仓风险；"
+            f"当前处于【{trend_regime}】（MA20斜率 {ma20_slope_pct:+.1f}%），{basis_note}裸卖Put面临顺势破位穿仓风险；"
             f"期货具备双向交易优势，顺势做空目标看至 {cur}{target1:g} ~ {cur}{target2:g}（波段盈亏比 {rr_t2}:1）。"
         )
     elif direction == "NEUTRAL_BEAR":
@@ -439,7 +449,7 @@ def analyze_direct_underlying_trade(
         optimal_label = "🚀 优先直接做多正股/期货 (防踏空主升浪)"
         optimal_tone = "bull"
         decision_reason = (
-            f"当前隐波分位较低（IVR {iv_rank:.0f}%）或正处【{trend_regime}】右侧启动点："
+            f"当前隐波分位较低（IVR {iv_rank:.0f}%）或正处【{trend_regime}】右侧启动点：{basis_note}"
             f"卖Put最大收益封顶仅 +{upside_crossover_pct:.1f}%（标的涨超 {cur}{upside_crossover_px:g} 即踏空），"
             f"直接做多波段目标 +{t2_pct:.1f}%（盈亏比 {rr_t2}:1，5年实证胜率 {emp_stats['winRatePct']:.1f}%），向上赔率远超卖Put！"
         )
@@ -448,7 +458,7 @@ def analyze_direct_underlying_trade(
         optimal_label = "⚖️ 黄金组合：50%直接做多 + 50%卖Put收租"
         optimal_tone = "cyan"
         decision_reason = (
-            f"趋势与波动率双优（直买评分 {direct_score} / 卖Put评分 {put_score}）："
+            f"趋势与波动率双优（直买评分 {direct_score} / 卖Put评分 {put_score}）：{basis_note}"
             f"建议【半仓直接做多】锁定上方 +{t2_pct:.1f}% 波段主升空间，同时【半仓卖出 {cur}{put_strike:g} Put】"
             f"（安全垫 -{downside_cushion_pct:.1f}%）收租降低整体持仓成本！"
         )
@@ -457,7 +467,7 @@ def analyze_direct_underlying_trade(
         optimal_label = "🛡️ 优先卖Put收租 (高胜率安全垫占优)"
         optimal_tone = "gold"
         decision_reason = (
-            f"当前处于【{trend_regime}】且隐波溢价丰厚（IVR {iv_rank:.0f}%，VRP {vrp_pts:+.1f}%）："
+            f"当前处于【{trend_regime}】且隐波溢价丰厚（IVR {iv_rank:.0f}%，VRP {vrp_pts:+.1f}%）：{basis_note}"
             f"直接追多胜率（{emp_stats['winRatePct']:.1f}%）不及卖Put双轨胜率（{put_pop_pct:.1f}%），"
             f"卖 {cur}{put_strike:g} Put 可享 -{downside_cushion_pct:.1f}% 抗跌缓冲垫并躺赚时间价值。"
         )
@@ -546,7 +556,9 @@ def analyze_direct_underlying_trade(
             "rr": round(f_rr, 1),         # /20
             "emp": round(f_emp, 1),       # /15
             "cap": round(f_cap, 1),       # /10
+            "basisAdj": round(basis_adj, 1),
         },
+        "basis": basis_info,
         "tradePlan": {
             "spotEntry": round(spot, dp),
             "idealEntry": ideal_entry,

@@ -200,8 +200,8 @@
 
           <div class="pc-metrics">
             <div class="pcm-item">
-              <span class="pcm-lbl">最新现价</span>
-              <span class="pcm-val">${cur}${fmtSmart(r.price)}</span>
+              <span class="pcm-lbl">最新现价${r.basis?.available ? " / 现货锚" : ""}</span>
+              <span class="pcm-val">${cur}${fmtSmart(r.price)}${r.basis?.available ? ` <small style="color:var(--text-muted);font-size:10.5px;" title="${r.basis.spotRefName}">(现:${fmtSmart(r.basis.spotRefPrice)})</small>` : ""}</span>
             </div>
             <div class="pcm-item">
               <span class="pcm-lbl">推荐Put行权价</span>
@@ -209,7 +209,7 @@
             </div>
             <div class="pcm-item">
               <span class="pcm-lbl">安全垫(OTM)</span>
-              <span class="pcm-val bull-txt">${fmtNum(t.otmPct, 1)}%</span>
+              <span class="pcm-val bull-txt">${fmtNum(t.otmPct, 1)}%${t.realSpotOtmPct != null && Math.abs(t.realSpotOtmPct - t.otmPct) >= 0.35 ? ` <small style="color:#60a5fa;font-size:10.5px;" title="含期现基差后的相对现货真实安全垫">(对现货${fmtNum(t.realSpotOtmPct, 1)}%)</small>` : ""}</span>
             </div>
             <div class="pcm-item">
               <span class="pcm-lbl">到期胜率(双轨取低)</span>
@@ -227,6 +227,7 @@
 
           <div class="pc-tags">
             <span class="mini-tag" style="${r.isRealIv ? 'border-color:rgba(16,185,129,0.45);color:#34d399;' : ''}">${r.ivSource || "⚪ 估算IV"}</span>
+            ${r.basis?.available ? `<span class="mini-tag" style="border-color:rgba(56,189,248,0.45);color:${r.basis.tone === 'bull' ? '#34d399' : r.basis.tone === 'bear' ? '#f87171' : '#38bdf8'};" title="${r.basis.badge}">${r.basis.shortBadge}</span>` : ""}
             ${tagsHtml}
             <span class="mini-tag">${subYield}</span>
           </div>
@@ -329,6 +330,7 @@
 
           <div class="pc-tags">
             <span class="mini-tag" style="border-color:rgba(245,158,11,0.45);color:#fbbf24;">${vp.optimalLabel || "工具对比"}</span>
+            ${r.basis?.available ? `<span class="mini-tag" style="border-color:rgba(56,189,248,0.45);color:${r.basis.tone === 'bull' ? '#34d399' : r.basis.tone === 'bear' ? '#f87171' : '#38bdf8'};" title="${r.basis.spotRefName}: ${cur}${fmtSmart(r.basis.spotRefPrice)}">${r.basis.badge}</span>` : ""}
             <span class="mini-tag">卖Put评分 ${fmtNum(r.putScore, 1)}分</span>
             <span class="mini-tag">有效杠杆 ${fmtNum(dt.sizing?.effectiveLeverage, 1)}x</span>
           </div>
@@ -383,12 +385,17 @@
               <div class="idx-tier-box ${isRec}">
                 <div class="itb-lbl">${shortLbl}${tk === recKey ? " ★" : ""}</div>
                 <div class="itb-strike">K = ${fmtSmart(tr.strike)} 点</div>
-                <div class="itb-meta">安全垫 ${fmtNum(tr.otmPct, 1)}% · 胜率 ${fmtNum(tr.popPct, 0)}%</div>
+                <div class="itb-meta">安全垫 ${fmtNum(tr.otmPct, 1)}%${tr.realSpotOtmPct != null ? `(现${fmtNum(tr.realSpotOtmPct, 1)}%)` : ""} · 胜率 ${fmtNum(tr.popPct, 0)}%</div>
                 <div class="itb-meta">权利金 ¥${fmtSmart(tr.contractPremium)} (${fmtNum(tr.annReturnMarginPct, 1)}%)</div>
               </div>
             `;
           })
           .join("");
+
+        const bs = r.basis || {};
+        const basisHtml = bs.available
+          ? `<span class="${bs.basisVal >= 0 ? "bull-txt" : "bear-txt"}">${bs.basisVal >= 0 ? `贴水 ${fmtNum(bs.basisVal, 1)}点` : `升水 ${fmtNum(Math.abs(bs.basisVal), 1)}点`} <small style="color:var(--text-muted)">(年化${bs.basisVal >= 0 ? "-" : "+"}${fmtNum(Math.abs(bs.annBasisPct), 1)}%)</small></span>`
+          : `<span class="cyan-txt">--</span>`;
 
         return `
         <div class="cn-idx-card ${activeCls}" data-id="${r.id}">
@@ -404,16 +411,16 @@
 
           <div class="pc-metrics">
             <div class="pcm-item">
-              <span class="pcm-lbl">最新指数点位</span>
-              <span class="pcm-val">${fmtSmart(r.price)} 点</span>
+              <span class="pcm-lbl">期指现价 / 现货指数</span>
+              <span class="pcm-val">${fmtSmart(r.price)} <small style="color:var(--text-muted)">/ 现 ${bs.available ? fmtSmart(bs.spotRefPrice) : "--"}</small></span>
             </div>
             <div class="pcm-item">
-              <span class="pcm-lbl">推荐卖Put行权价</span>
-              <span class="pcm-val gold-txt">${fmtSmart(t.strike)} 点</span>
+              <span class="pcm-lbl">期现差价 (基差/年化)</span>
+              <span class="pcm-val">${basisHtml}</span>
             </div>
             <div class="pcm-item">
-              <span class="pcm-lbl">虚值安全垫 / 盈亏平衡</span>
-              <span class="pcm-val bull-txt">${fmtNum(t.otmPct, 1)}% (${fmtSmart(t.breakeven)})</span>
+              <span class="pcm-lbl">推荐行权价 / 真实安全垫</span>
+              <span class="pcm-val gold-txt">${fmtSmart(t.strike)}点 <small class="bull-txt">(对现货-${fmtNum(t.realSpotOtmPct ?? t.otmPct, 1)}%)</small></span>
             </div>
             <div class="pcm-item">
               <span class="pcm-lbl">到期胜率 (双轨取低)</span>
@@ -840,6 +847,13 @@
       { label: "◇ 卖Put到期盈亏平衡点", price: activeTier.breakeven, cls: "is-strike" },
     ];
 
+    if (a.basis && a.basis.available && a.basis.spotRefPrice) {
+      ladderItems.push({
+        label: `▲ ${a.basis.spotRefName || "现货/近月锚"} (${a.basis.shortBadge || "期现锚"})`,
+        price: a.basis.spotRefPrice,
+        cls: "is-cost",
+      });
+    }
     if (a.cost) {
       ladderItems.push(
         { label: `● 产业完全成本中枢 (${a.cost.label.slice(0, 10)})`, price: a.cost.primaryCost, cls: "is-cost" },
@@ -1446,6 +1460,10 @@
           costCell = `<span class="${cls}" title="完全成本 ${r.cost.primaryCost} / 现金成本 ${r.cost.cashCost}">较成本 ${fmtSignPct(vpct, 1)}</span>`;
         } else {
           costCell = `<span class="cyan-txt" title="距52周高点回撤">回调 ${fmtSignPct(r.drawdown52wPct, 1)}</span>`;
+        }
+        if (r.basis && r.basis.available) {
+          const bCol = r.basis.tone === "bull" ? "#34d399" : r.basis.tone === "bear" ? "#f87171" : "#38bdf8";
+          costCell += `<div style="font-size:10.5px;color:${bCol};margin-top:2px;" title="${r.basis.spotRefName}: ${cur}${fmtSmart(r.basis.spotRefPrice)} · ${r.basis.badge}">期现: ${r.basis.shortBadge}</div>`;
         }
 
         return `

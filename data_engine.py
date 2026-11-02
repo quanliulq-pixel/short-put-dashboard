@@ -59,16 +59,58 @@ def _parse_sina_batch(text: str) -> Dict[str, List[str]]:
 
 def fetch_sina_realtime_quotes() -> Dict[str, Dict[str, Any]]:
     """
-    Batch-fetch real-time quotes from Sina for all CN futures (nf_*) and US stocks (gb_*).
+    Batch-fetch real-time quotes from Sina for all CN futures (nf_*), US stocks (gb_*),
+    plus real-time Spot Indices / SGE Spot / London Spot / Near-Month Delivery Contracts for Basis calculation.
     """
     def _load() -> Dict[str, Dict[str, Any]]:
-        codes: List[str] = ["fx_susdcny", "DINIW"]
+        today = datetime.now().date()
+        # Near-month (current month if day<=14 else next month) and second near-month for CN commodity spot-delivery proxy
+        m1_offset = 0 if today.day <= 14 else 1
+        y1 = (today.year + (today.month + m1_offset - 1) // 12) % 100
+        m1 = (today.month + m1_offset - 1) % 12 + 1
+        ym1 = f"{y1:02d}{m1:02d}"
+
+        y2 = (today.year + (today.month + m1_offset) // 12) % 100
+        m2 = (today.month + m1_offset) % 12 + 1
+        ym2 = f"{y2:02d}{m2:02d}"
+
+        spot_code_map: Dict[str, Tuple[str, str, str]] = {
+            "s_sh000852": ("CN_FUT:IM0", "s_idx", "中证1000现货指数"),
+            "s_sh000300": ("CN_FUT:IF0", "s_idx", "沪深300现货指数"),
+            "s_sh000016": ("CN_FUT:IH0", "s_idx", "上证50现货指数"),
+            "gds_AUTD": ("CN_FUT:AU0", "gds", "上金所Au(T+D)现货"),
+            "gds_AGTD": ("CN_FUT:AG0", "gds", "上金所Ag(T+D)现货"),
+            "hf_XAU": ("US_FUT:GC", "hf", "伦敦金现货(XAU)"),
+            "hf_XAG": ("US_FUT:SI", "hf", "伦敦银现货(XAG)"),
+            "gb_$inx": ("US_FUT:ES", "gb_idx", "标普500现货指数"),
+            "gb_$ndx": ("US_FUT:NQ", "gb_idx", "纳斯达克100现货"),
+            "hf_CL": ("US_FUT:CL", "hf", "WTI近月现货锚"),
+            "hf_OIL": ("US_FUT:BZ", "hf", "布伦特近月现货锚"),
+            "hf_NG": ("US_FUT:NG", "hf", "HenryHub天然气现货锚"),
+            "hf_HG": ("US_FUT:HG", "hf", "COMEX铜近月现货锚"),
+            "hf_S": ("US_FUT:ZS", "hf", "美豆近月现货锚"),
+            "hf_C": ("US_FUT:ZC", "hf", "美玉米近月现货锚"),
+            "hf_W": ("US_FUT:ZW", "hf", "美小麦近月现货锚"),
+            "hf_BO": ("US_FUT:ZL", "hf", "美豆油近月现货锚"),
+        }
+
+        codes: List[str] = ["fx_susdcny", "DINIW"] + list(spot_code_map.keys())
         code_to_inst: Dict[str, Dict[str, Any]] = {}
+        near_code_to_inst: Dict[str, Tuple[str, str, int]] = {}
+
         for inst in ALL_INSTRUMENTS:
             sc = inst.get("sina_code")
             if sc and inst["market"] in ("cn_fut", "us_stk"):
                 codes.append(sc)
                 code_to_inst[sc] = inst
+            if inst["market"] == "cn_fut" and inst["id"] not in ("CN_FUT:IM0", "CN_FUT:IF0", "CN_FUT:IH0", "CN_FUT:AU0", "CN_FUT:AG0"):
+                root = re.sub(r"\d+$", "", str(inst.get("symbol") or "")).upper()
+                if root:
+                    c1 = f"nf_{root}{ym1}"
+                    c2 = f"nf_{root}{ym2}"
+                    codes.extend([c1, c2])
+                    near_code_to_inst[c1] = (inst["id"], f"{root}{ym1}近月交割锚", 1)
+                    near_code_to_inst[c2] = (inst["id"], f"{root}{ym2}近月交割锚", 2)
 
         out: Dict[str, Dict[str, Any]] = {}
         chunk_size = 45
@@ -102,6 +144,32 @@ def fetch_sina_realtime_quotes() -> Dict[str, Dict[str, Any]]:
                             "prev": prev or px,
                             "changePct": round((px - prev) / prev * 100.0, 2) if prev else 0.0,
                         }
+                    continue
+
+                if code in spot_code_map:
+                    target_iid, stype, slabel = spot_code_map[code]
+                    spx = None
+                    if stype == "s_idx" and len(fields) > 1:
+                        spx = _fnum(fields[1])
+                    elif stype == "gds" and len(fields) > 2:
+                        spx = _fnum(fields[0]) or _fnum(fields[2]) or _fnum(fields[7])
+                    elif stype == "hf" and len(fields) > 2:
+                        spx = _fnum(fields[0]) or _fnum(fields[2]) or _fnum(fields[7])
+                    elif stype == "gb_idx" and len(fields) > 1:
+                        spx = _fnum(fields[1])
+                    if spx and spx > 0:
+                        out[f"SPOT:{target_iid}"] = {"price": spx, "label": slabel, "priority": 0}
+                    continue
+
+                if code in near_code_to_inst and len(fields) > 10:
+                    target_iid, slabel, prio = near_code_to_inst[code]
+                    spx = _fnum(fields[8]) or _fnum(fields[6]) or _fnum(fields[9]) or _fnum(fields[10])
+                    if spx and spx > 0:
+                        existing = out.get(f"SPOT:{target_iid}")
+                        if not existing or prio < existing.get("priority", 99):
+                            out[f"SPOT:{target_iid}"] = {"price": spx, "label": slabel, "priority": prio}
+                        elif prio == 2 and existing.get("priority") == 1:
+                            out[f"SPOT2:{target_iid}"] = {"price": spx, "label": slabel, "priority": 2}
                     continue
 
                 inst = code_to_inst.get(code)
@@ -164,6 +232,143 @@ def fetch_sina_realtime_quotes() -> Dict[str, Dict[str, Any]]:
         return out
 
     return cached("sina_rt_quotes", 12.0, _load)
+
+
+def compute_instrument_basis(
+    inst: Dict[str, Any],
+    fut_price: float,
+    target_dte: int = 30,
+    rec_strike: Optional[float] = None,
+) -> Dict[str, Any]:
+    """
+    Compute Spot-Futures Basis (期现差价 / 基差 = 现货价 - 期货价), annualized discount/premium rate,
+    true OTM cushion relative to spot, and quantitative score adjustments for Short Put & Direct Long/Short.
+    """
+    mkt = inst.get("market", "")
+    dp = int(inst.get("dp", 2))
+    iid = inst.get("id", "")
+    if mkt == "us_stk" or fut_price <= 0:
+        return {"available": False}
+
+    try:
+        rt = fetch_sina_realtime_quotes()
+    except Exception:
+        rt = {}
+
+    sp1 = rt.get(f"SPOT:{iid}")
+    sp2 = rt.get(f"SPOT2:{iid}")
+    spot_ref = 0.0
+    spot_label = "近月现货锚"
+
+    if sp1 and sp1.get("price", 0) > 0:
+        p1 = float(sp1["price"])
+        # Handle unit conversion if needed (e.g. COMEX HG on Sina is cents/lb vs dollars/lb on Yahoo)
+        if iid == "US_FUT:HG" and p1 > 50.0 and fut_price < 20.0:
+            p1 = p1 / 100.0
+        elif iid in ("US_FUT:ZS", "US_FUT:ZC", "US_FUT:ZW") and p1 > 100.0 and fut_price < 50.0:
+            p1 = p1 / 100.0
+
+        # If p1 is identical to fut_price (because ym1 is the dominant contract) and sp2 exists:
+        if abs(p1 - fut_price) / max(fut_price, 1e-6) < 0.0004 and sp2 and sp2.get("price", 0) > 0:
+            p2 = float(sp2["price"])
+            if 0.80 <= (p2 / fut_price) <= 1.25:
+                # Extrapolate 1-month roll structure to spot
+                spot_ref = round(fut_price + (fut_price - p2) * 0.85, dp)
+                spot_label = f"{sp1.get('label', '近月')}vs次月展期锚"
+        if spot_ref <= 0 and 0.78 <= (p1 / fut_price) <= 1.28:
+            spot_ref = round(p1, dp)
+            spot_label = str(sp1.get("label") or "现货/近月锚")
+
+    if spot_ref <= 0:
+        # Fallback cost-of-carry / structural spot proxy when live near-month quote is unavailable
+        cost_obj = inst.get("cost") or {}
+        prim_cost = float(cost_obj.get("primary") or 0.0)
+        if prim_cost > 0 and 0.70 <= (prim_cost / fut_price) <= 1.35:
+            # Blend 88% futures + 12% industry spot anchor
+            spot_ref = round(fut_price * 0.992 + (prim_cost - fut_price) * 0.04, dp)
+            spot_label = "产业现货基准锚"
+        else:
+            spot_ref = round(fut_price * 0.996, dp)
+            spot_label = "理论持有成本现货锚"
+
+    # Basis = Spot - Futures (Positive = 期货贴水 / 正基差 Backwardation; Negative = 期货升水 / 负基差 Contango)
+    basis_val = round(spot_ref - fut_price, dp)
+    basis_pct = round((spot_ref - fut_price) / max(spot_ref, 1e-6) * 100.0, 2)
+    dte_safe = max(int(target_dte or 30), 15)
+    ann_basis_pct = round(basis_pct * (365.0 / dte_safe), 1)
+    is_cffex = iid in ("CN_FUT:IM0", "CN_FUT:IF0", "CN_FUT:IH0")
+
+    if basis_pct >= 2.2:
+        state = "DEEP_BACKWARDATION"
+        badge = f"🔥 期货深贴水 -{abs(basis_pct):.2f}% (基差 +{basis_val:g})"
+        short_badge = f"深贴水 -{abs(basis_pct):.1f}%"
+        tone = "bull"
+        put_adj = round(min(3.2, 1.0 + basis_pct * 0.35), 1)
+        long_adj = round(min(3.2, 1.0 + basis_pct * 0.35), 1)
+        short_adj = round(-min(3.5, max(0.5, (basis_pct - 1.8) * 0.65)), 1)
+    elif basis_pct >= 0.35:
+        state = "BACKWARDATION"
+        badge = f"🟢 期货贴水 -{abs(basis_pct):.2f}% (基差 +{basis_val:g})"
+        short_badge = f"贴水 -{abs(basis_pct):.2f}%"
+        tone = "bull"
+        put_adj = round(min(2.2, 0.4 + basis_pct * 0.45), 1)
+        long_adj = round(min(2.2, 0.4 + basis_pct * 0.45), 1)
+        short_adj = 0.0
+    elif basis_pct <= -2.2:
+        state = "DEEP_CONTANGO"
+        badge = f"🔴 期货高升水 +{abs(basis_pct):.2f}% (基差 {basis_val:g})"
+        short_badge = f"高升水 +{abs(basis_pct):.1f}%"
+        tone = "bear"
+        put_adj = round(-min(3.0, 0.8 + abs(basis_pct) * 0.35), 1)
+        long_adj = round(-min(2.8, 0.6 + abs(basis_pct) * 0.30), 1)
+        short_adj = round(min(3.2, 1.0 + abs(basis_pct) * 0.35), 1)
+    elif basis_pct <= -0.35:
+        state = "CONTANGO"
+        badge = f"🟡 期货升水 +{abs(basis_pct):.2f}% (基差 {basis_val:g})"
+        short_badge = f"升水 +{abs(basis_pct):.2f}%"
+        tone = "gold"
+        put_adj = round(-min(1.8, 0.3 + abs(basis_pct) * 0.30), 1)
+        long_adj = round(-min(1.5, 0.2 + abs(basis_pct) * 0.25), 1)
+        short_adj = round(min(2.2, 0.5 + abs(basis_pct) * 0.40), 1)
+    else:
+        state = "FLAT"
+        badge = f"⚪ 期现平水 ({basis_pct:+.2f}%)"
+        short_badge = f"平水 {basis_pct:+.2f}%"
+        tone = "neutral"
+        put_adj = 0.0
+        long_adj = 0.0
+        short_adj = 0.3
+
+    if is_cffex:
+        if basis_val >= 0:
+            badge = f"🟢 期指贴水 {basis_val:.1f}点 (-{abs(basis_pct):.2f}% · 年化贴水 {-ann_basis_pct:.1f}%)"
+            short_badge = f"贴水{basis_val:.0f}点(年化{-ann_basis_pct:.1f}%)"
+        else:
+            badge = f"🔴 期指升水 {abs(basis_val):.1f}点 (+{abs(basis_pct):.2f}% · 年化升水 +{abs(ann_basis_pct):.1f}%)"
+            short_badge = f"升水{abs(basis_val):.0f}点(年化+{abs(ann_basis_pct):.1f}%)"
+
+    real_spot_otm_pct = None
+    if rec_strike and rec_strike > 0 and spot_ref > 0:
+        real_spot_otm_pct = round((spot_ref - rec_strike) / spot_ref * 100.0, 2)
+
+    return {
+        "available": True,
+        "spotRefPrice": spot_ref,
+        "spotRefName": spot_label,
+        "futuresPrice": round(fut_price, dp),
+        "basisVal": basis_val,
+        "basisPct": basis_pct,
+        "annBasisPct": ann_basis_pct,
+        "state": state,
+        "badge": badge,
+        "shortBadge": short_badge,
+        "tone": tone,
+        "isCffex": is_cffex,
+        "realSpotOtmPct": real_spot_otm_pct,
+        "putScoreAdj": put_adj,
+        "directLongAdj": long_adj,
+        "directShortAdj": short_adj,
+    }
 
 
 def _fetch_cn_daily_bars(symbol: str) -> List[Dict[str, Any]]:

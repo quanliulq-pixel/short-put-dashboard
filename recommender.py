@@ -25,6 +25,7 @@ import math
 from typing import Any, Dict, List, Optional, Tuple
 
 from data_engine import (
+    compute_instrument_basis,
     ensure_all_bars_loaded,
     get_instrument_bars,
     get_macro_vol_regime,
@@ -926,6 +927,23 @@ def analyze_single_instrument(
 
     rec_tier = tiers[rec_tier_key]
 
+    # Compute Spot-Futures Basis (期现差价 / 升贴水率 / 真实相对现货安全垫)
+    basis_info = compute_instrument_basis(
+        inst=inst,
+        fut_price=spot,
+        target_dte=target_dte,
+        rec_strike=float(rec_tier.get("strike") or 0.0),
+    )
+    if basis_info and basis_info.get("available"):
+        s_ref = float(basis_info.get("spotRefPrice") or spot)
+        if s_ref > 0:
+            for tk, tr in tiers.items():
+                if tr and tr.get("strike"):
+                    tr["realSpotOtmPct"] = round((s_ref - float(tr["strike"])) / s_ref * 100.0, 2)
+        put_basis_adj = float(basis_info.get("putScoreAdj") or 0.0)
+        if trend_regime not in ("破位急跌飞刀", "空头阴跌通道"):
+            total_score = round(max(22.0, min(98.0, total_score + put_basis_adj)), 1)
+
     # Classify Strategy Archetype & Verdict Badge
     archetype, badge_tone, thesis_tags = _classify_archetype(
         inst=inst,
@@ -942,6 +960,10 @@ def analyze_single_instrument(
         cost_info=cost_info,
         total_score=total_score,
     )
+    if basis_info and basis_info.get("available") and abs(float(basis_info.get("basisPct") or 0.0)) >= 0.45:
+        sb = str(basis_info.get("shortBadge") or "")
+        if sb and sb not in thesis_tags:
+            thesis_tags = [thesis_tags[0], sb] + thesis_tags[1:3]
 
     vol_surface = compute_vol_skew_and_term(
         inst=inst,
@@ -985,6 +1007,7 @@ def analyze_single_instrument(
         rec_put_tier=rec_tier,
         put_score=total_score,
         target_dte=target_dte,
+        basis_info=basis_info,
     )
 
     playbook = _build_weekly_playbook(
@@ -1007,6 +1030,7 @@ def analyze_single_instrument(
         archetype=archetype,
         target_dte=target_dte,
         direct_trade=direct_trade,
+        basis_info=basis_info,
     )
 
     return {
@@ -1053,6 +1077,7 @@ def analyze_single_instrument(
         "highCorrPeers": [],
         "supports": supports,
         "cost": cost_info,
+        "basis": basis_info,
         "moatNote": inst.get("moat_note", ""),
         "putScore": total_score,
         "scoreBreakdown": {
@@ -1181,6 +1206,7 @@ def _build_weekly_playbook(
     archetype: str,
     target_dte: int,
     direct_trade: Optional[Dict[str, Any]] = None,
+    basis_info: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     rec = tiers[rec_key]
     cons = tiers["conservative"]
@@ -1190,9 +1216,14 @@ def _build_weekly_playbook(
 
     bsm_pop = rec.get("bsmPopPct", rec["popPct"])
     emp_pop = rec.get("empiricalPopPct", rec["popPct"])
+    real_otm_str = (
+        f"（相对现货真实安全垫 {rec['realSpotOtmPct']:.1f}%）"
+        if rec.get("realSpotOtmPct") is not None and abs(float(rec["realSpotOtmPct"]) - float(rec["otmPct"])) >= 0.3
+        else ""
+    )
     headline = (
         f"【{archetype}】推荐卖出 {target_dte}天到期、行权价 {cur}{rec['strike']:g} Put（{rec['label']}，"
-        f"Delta {rec['delta']:.2f}），安全垫 {rec['otmPct']:.1f}%（合 {rec['atrBufferMultiple']:.1f} 倍日均ATR），"
+        f"Delta {rec['delta']:.2f}），安全垫 {rec['otmPct']:.1f}%{real_otm_str}（合 {rec['atrBufferMultiple']:.1f} 倍日均ATR），"
         f"双轨取低胜率 {rec['popPct']:.1f}%（BSM肥尾 {bsm_pop:.1f}% / 5年历史实证 {emp_pop:.1f}%）。"
     )
 
@@ -1201,10 +1232,17 @@ def _build_weekly_playbook(
         if is_real_iv
         else f"{iv_source}，模型推算VRP {vrp_pts:+.1f}个百分点（已锁定中性VRP得分防虚高）"
     )
+    basis_str = ""
+    if basis_info and basis_info.get("available"):
+        basis_str = (
+            f"【期现差价/基差】{basis_info.get('spotRefName', '现货锚')} {cur}{basis_info.get('spotRefPrice', spot):g}，"
+            f"{basis_info.get('badge', '')}。"
+        )
 
     if cost_info:
         why_now = (
             f"{inst['name']}现价 {spot:g} {unit}（趋势状态：【{trend_regime}】，近5年分位 {pct_5y:.1f}%，RSI {rsi:.1f}）。"
+            f"{basis_str}"
             f"产业锚方面，{cost_info['label']}约 {cost_info['primaryCost']:g} {unit}，现金成本约 {cost_info['cashCost']:g} {unit}，"
             f"现价相对完全成本 {cost_info['vsPrimaryPct']:+.1f}%（{cost_info['status']}）。"
             f"期权盘口评级为【{liq_label}】（{iv_note}）。{inst.get('moat_note', '')}"
@@ -1213,6 +1251,7 @@ def _build_weekly_playbook(
         why_now = (
             f"{inst['name']}现价 {cur}{spot:g}（趋势状态：【{trend_regime}】，RSI {rsi:.1f}，"
             f"20日历史波动率 {hv20*100:.1f}%，IV分位 {iv_rank:.0f}%，{iv_note}）。"
+            f"{basis_str}"
             f"技术面60日均线位于 {cur}{supports['ma60']:g}，布林下轨位于 {cur}{supports['bollLow']:g}，"
             f"期权流动性评级为【{liq_label}】。{inst.get('moat_note', '')}"
         )
