@@ -854,47 +854,226 @@
 
     <!-- 美气 NG · Henry Hub 九因子看板（与本站定时构建同步刷新） -->
     <section class="panel-card" id="ng-section" style="display:none; margin-top:18px;">
-      <div class="panel-hdr" style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:space-between;">
-        <div>
-          <h2 style="margin:0;">美气 NG · Henry Hub 九因子</h2>
-          <p class="sub" style="margin:4px 0 0;">与本站同一套 GitHub Actions 定时重算推送；研究用途，非投资建议</p>
+      <div class="ng-layout">
+        <div class="ng-banner">
+          <div class="ng-banner-left">
+            <div class="ng-brand-row">
+              <span class="badge badge-gold">NYMEX NG</span>
+              <h2>Henry Hub 天然气专属投研看板</h2>
+              <span class="tag-pill" id="ng-season-pill">季节模式</span>
+              <div class="live-status" style="margin-left:auto;">
+                <span class="status-dot" id="ng-status-dot"></span>
+                <span id="ng-status-text">等待加载…</span>
+              </div>
+            </div>
+            <p class="sub" style="margin:0;">与本站同一套 GitHub Actions 定时重算推送 · 研究用途，非投资建议</p>
+            <div class="ng-kpi-strip">
+              <div class="ng-kpi-item">
+                <span class="l">现价(连续)</span>
+                <span class="v mono" id="ng-kpi-price">—</span>
+                <span class="s" id="ng-kpi-chg1d">—</span>
+              </div>
+              <div class="ng-kpi-item">
+                <span class="l">近1周 / 近1月</span>
+                <span class="v mono" id="ng-kpi-chg5d">—</span>
+                <span class="s" id="ng-kpi-chg21d">—</span>
+              </div>
+              <div class="ng-kpi-item">
+                <span class="l">52周分位 / 区间</span>
+                <span class="v mono" id="ng-kpi-pct52">—</span>
+                <span class="s" id="ng-kpi-range52">—</span>
+              </div>
+              <div class="ng-kpi-item">
+                <span class="l">ATR(14) / 20日年化波动</span>
+                <span class="v mono" id="ng-kpi-atr">—</span>
+                <span class="s" id="ng-kpi-vol">—</span>
+              </div>
+            </div>
+          </div>
+          <div class="ng-banner-right" id="ng-score-meter-box">
+            <div class="meter-header">
+              <span class="l">多空全景综合分</span>
+              <span class="meter-conf" id="ng-conf-badge">置信度 —%</span>
+            </div>
+            <div class="meter-body">
+              <div class="meter-score-large mono" id="ng-composite-score">0</div>
+              <div class="meter-bias-tag" id="ng-bias-tag">计算中…</div>
+            </div>
+            <div class="meter-bar-track">
+              <div class="meter-bar-zero"></div>
+              <div class="meter-bar-fill" id="ng-meter-bar"></div>
+            </div>
+            <div class="meter-scale">
+              <span>-100 极度偏空</span>
+              <span>0 中性</span>
+              <span>+100 极度偏多</span>
+            </div>
+          </div>
         </div>
-        <div class="live-status"><span class="status-dot" id="ng-status-dot"></span><span id="ng-status-text">等待加载…</span></div>
-      </div>
-      <div class="regime-banner" style="margin-top:12px;">
-        <div class="regime-left">
-          <span class="regime-tag" id="ng-season">季节 —</span>
-          <span class="regime-text" id="ng-summary">加载中…</span>
+
+        <div class="ng-strategy-grid">
+          <div class="ng-subpanel ng-advice-panel">
+            <div class="ng-panel-head">
+              <div>
+                <h3>量化交易建议与风控规划</h3>
+                <p class="sub" id="ng-advice-horizon">1–3周波段策略 · 动态ATR定价</p>
+              </div>
+              <span class="tag-pill" id="ng-action-pill">等待信号</span>
+            </div>
+            <div class="advice-content">
+              <div class="advice-summary-box" id="ng-advice-summary">加载建议中…</div>
+              <div class="advice-levels-grid">
+                <div class="level-box entry">
+                  <span class="l">建议入场区间</span>
+                  <span class="v mono" id="ng-level-entry">—</span>
+                </div>
+                <div class="level-box stop">
+                  <span class="l">防守止损线</span>
+                  <span class="v mono" id="ng-level-stop">—</span>
+                </div>
+                <div class="level-box target">
+                  <span class="l">目标位一 / 目标位二</span>
+                  <span class="v mono" id="ng-level-target">—</span>
+                </div>
+                <div class="level-box rr">
+                  <span class="l">盈亏比 / 建议仓位系数</span>
+                  <span class="v mono" id="ng-level-rr">—</span>
+                </div>
+              </div>
+              <div class="advice-triggers">
+                <div class="trigger-title">⚠️ 逻辑失效条件（触发即离场）</div>
+                <ul id="ng-inval-list"><li>加载中…</li></ul>
+              </div>
+              <div class="advice-triggers risks">
+                <div class="trigger-title">📌 主要风险提示</div>
+                <ul id="ng-risk-list"><li>加载中…</li></ul>
+              </div>
+            </div>
+          </div>
+
+          <div class="ng-subpanel ng-radar-panel">
+            <div class="ng-panel-head">
+              <div>
+                <h3>关键事件雷达 &amp; 合约换算器</h3>
+                <p class="sub">倒计时避险预警 · 头寸价值精算</p>
+              </div>
+            </div>
+            <div class="radar-content">
+              <div class="events-list" id="ng-events-list"></div>
+              <div class="calc-box">
+                <div class="calc-head">合约规格精算</div>
+                <div class="calc-row">
+                  <label>合约：</label>
+                  <select id="ng-calc-contract">
+                    <option value="NG">NYMEX标准NG (10,000 MMBtu)</option>
+                    <option value="QG">E-mini QG (2,500 MMBtu)</option>
+                    <option value="MNG" selected>Micro MNG (1,000 MMBtu)</option>
+                  </select>
+                </div>
+                <div class="calc-row">
+                  <label>手数：</label>
+                  <input type="number" id="ng-calc-lots" value="1" min="1" max="100" />
+                  <span class="hint" id="ng-calc-notional">名义价值: $—</span>
+                </div>
+                <div class="calc-metrics" id="ng-calc-metrics"></div>
+              </div>
+              <div class="ng-history-box">
+                <div class="calc-head">最近评分快照</div>
+                <ul id="ng-history" class="ng-hist-list"></ul>
+              </div>
+            </div>
+          </div>
         </div>
-        <div class="kpi-group">
-          <div class="kpi-item"><span class="k-lbl">倾向</span><strong class="k-num" id="ng-bias">—</strong></div>
-          <div class="kpi-item"><span class="k-lbl">综合分</span><strong class="k-num" id="ng-comp">—</strong></div>
-          <div class="kpi-item"><span class="k-lbl">置信度</span><strong class="k-num" id="ng-conf">—</strong></div>
-          <div class="kpi-item"><span class="k-lbl">最新价</span><strong class="k-num" id="ng-px">—</strong></div>
+
+        <div class="ng-subpanel">
+          <div class="ng-panel-head">
+            <div>
+              <h3>价格 K 线（连续合约）</h3>
+              <p class="sub">可缩放拖动 · 红涨绿跌按能源惯例</p>
+            </div>
+          </div>
+          <div id="ng-chart" class="ng-price-chart"></div>
         </div>
-      </div>
-      <p class="sub" id="ng-action" style="margin:8px 0 12px;"></p>
-      <div style="display:grid;gap:14px;grid-template-columns:1.2fr .8fr;">
-        <div>
-          <h3 style="margin:0 0 8px;font-size:14px;">价格 K 线</h3>
-          <div id="ng-chart" style="height:320px;width:100%;"></div>
+
+        <div class="ng-charts-grid">
+          <div class="ng-subpanel ng-chart-card">
+            <div class="ng-panel-head">
+              <h3>远期曲线结构 (Forward Curve)</h3>
+              <span class="hint" id="ng-curve-hint">近月 vs 次月月差</span>
+            </div>
+            <div class="ng-chart-stage"><div id="chart-ng-curve" class="chart-embed"></div></div>
+          </div>
+          <div class="ng-subpanel ng-chart-card">
+            <div class="ng-panel-head">
+              <h3>EIA 库存 5年季节区间带</h3>
+              <span class="hint" id="ng-storage-hint">季节走势 &amp; 季末推演</span>
+            </div>
+            <div class="ng-chart-stage"><div id="chart-ng-storage" class="chart-embed"></div></div>
+          </div>
+          <div class="ng-subpanel ng-chart-card">
+            <div class="ng-panel-head">
+              <h3>16日需求加权度日 (HDD/CDD) vs 常态</h3>
+              <span class="hint" id="ng-weather-hint">寒潮/温和偏差分析</span>
+            </div>
+            <div class="ng-chart-stage"><div id="chart-ng-weather" class="chart-embed"></div></div>
+          </div>
+          <div class="ng-subpanel ng-chart-card">
+            <div class="ng-panel-head">
+              <h3>跨大西洋 LNG 出口套利 (TTF − HH)</h3>
+              <span class="hint" id="ng-lng-hint">出口盈亏平衡走势</span>
+            </div>
+            <div class="ng-chart-stage"><div id="chart-ng-lng" class="chart-embed"></div></div>
+          </div>
         </div>
-        <div>
-          <h3 style="margin:0 0 8px;font-size:14px;">九因子</h3>
-          <div id="ng-factors"></div>
+
+        <div class="ng-subpanel ng-factors-panel">
+          <div class="ng-panel-head">
+            <div>
+              <h3>价格驱动因子拆解与传导机制</h3>
+              <p class="sub">各因子得分 [-100 极度利空 ~ +100 极度利多] × 季节权重 = 综合贡献</p>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table class="ng-factors-table">
+              <thead>
+                <tr>
+                  <th>驱动维度</th>
+                  <th class="num">季节权重</th>
+                  <th class="num">因子分</th>
+                  <th class="num">净贡献</th>
+                  <th>当前读数 &amp; 状态</th>
+                  <th>传导机制与逻辑链解释</th>
+                </tr>
+              </thead>
+              <tbody id="ng-factors-body">
+                <tr><td colspan="6" class="empty">加载因子中…</td></tr>
+              </tbody>
+            </table>
+          </div>
         </div>
-      </div>
-      <div style="display:grid;gap:14px;grid-template-columns:1fr 1fr;margin-top:14px;">
-        <div>
-          <h3 style="margin:0 0 8px;font-size:14px;">新闻</h3>
-          <ul id="ng-news" class="sub" style="padding-left:18px;margin:0;"></ul>
-        </div>
-        <div>
-          <h3 style="margin:0 0 8px;font-size:14px;">最近评分</h3>
-          <ul id="ng-history" class="sub" style="padding-left:18px;margin:0;"></ul>
+
+        <div class="ng-subpanel ng-news-panel">
+          <div class="ng-panel-head">
+            <div>
+              <h3>实时网络情报流与价格影响矩阵</h3>
+              <p class="sub" id="ng-news-meta">检索覆盖：LNG出口/检修 · 天气预报/极地涡旋 · EIA库存异动 · 产区钻机/冻停</p>
+            </div>
+            <div class="seg" id="ng-news-filter">
+              <button type="button" data-cat="all" class="active">全部</button>
+              <button type="button" data-cat="lng">LNG出口</button>
+              <button type="button" data-cat="weather">天气预报</button>
+              <button type="button" data-cat="storage">库存异动</button>
+              <button type="button" data-cat="production">产量产区</button>
+              <button type="button" data-cat="europe">欧洲地缘</button>
+            </div>
+          </div>
+          <div class="ng-news-stream" id="ng-news-list">
+            <div class="empty">加载最新情报流…</div>
+          </div>
         </div>
       </div>
     </section>
+
 
     <footer class="app-footer">
       <p>量化模型说明（v4.0 期权卖方 + 股期直接买卖双核实战版）：美股采用 BSM 定价并对跨季报窗口做跳空风险折价（Yahoo 真实财报日 + 估算日历双保险）；美期货、中国期货及中金所股指期权（MO/IO/HO）采用 Black-76 模型（b=0）并对主连换月跳空做平滑复权；支持 25-Delta Put 偏度与 7D/30D/60D 期限结构诊断、牛市看跌价差（Bull Put Spread）保护腿自动配对、车轮策略（Wheel Covered Call）接货备兑衔接、直接买卖股票/期货（做多正股/ETF · 双向做多/做空期货 · ATR波段止损 · 踏空临界点 S+P 对决）、实盘/模拟持仓止盈/移仓/硬止损动态雷达及 52~104 周滚动全样本实证检验。仅供量化研究参考，不构成投资建议。</p>

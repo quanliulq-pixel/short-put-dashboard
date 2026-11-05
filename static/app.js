@@ -2772,6 +2772,28 @@
   }
 
 
+  const ngState = { charts: {}, newsCat: "all", calcContract: "MNG", calcLots: 1, priceChart: null };
+
+  function ngFmt(n, dig = 1) {
+    if (n == null || Number.isNaN(Number(n))) return "—";
+    return Number(n).toFixed(dig);
+  }
+
+  function getNgChart(id) {
+    if (!window.echarts) return null;
+    const node = el(id);
+    if (!node) return null;
+    if (!ngState.charts[id]) {
+      ngState.charts[id] = echarts.init(node);
+    }
+    return ngState.charts[id];
+  }
+
+  function resizeNgCharts() {
+    Object.values(ngState.charts).forEach((c) => { try { c.resize(); } catch (_) {} });
+    if (ngState.priceChart) { try { ngState.priceChart.resize(); } catch (_) {} }
+  }
+
   function renderNgDashboard() {
     const d = window.__STATIC_NG__;
     const section = el("ng-section");
@@ -2782,70 +2804,478 @@
       if (st) st.textContent = "无 NG 快照";
       return;
     }
-    const fmt = (n, dig=1) => (n == null || Number.isNaN(Number(n))) ? "—" : Number(n).toFixed(dig);
-    const cls = (n) => n == null ? "" : (n > 0 ? "pos" : (n < 0 ? "neg" : ""));
-    el("ng-season").textContent = d.season_cn || d.season || "季节 —";
-    el("ng-summary").textContent = (d.advice && (d.advice.summary || d.advice.action)) || "—";
-    el("ng-action").textContent = (d.advice && d.advice.action) || "";
-    el("ng-bias").textContent = (d.advice && d.advice.bias_cn) || "—";
-    const comp = d.composite_100;
-    const compEl = el("ng-comp");
-    compEl.textContent = fmt(comp, 1);
-    compEl.className = "k-num " + cls(comp);
-    el("ng-conf").textContent = fmt(d.confidence, 0);
-    const px = (d.price && d.price.price != null) ? d.price.price : null;
-    el("ng-px").textContent = fmt(px, 3);
-    if (st) st.textContent = d.updated_at ? `已更新 ${String(d.updated_at).slice(11, 19) || d.updated_at}` : "已加载快照";
+    if (st) st.textContent = d.updated_at ? `已更新 ${String(d.updated_at).replace("T", " ").slice(0, 19)}` : "已加载快照";
     if (dot) dot.style.background = "#26a69a";
 
-    const box = el("ng-factors");
-    const factors = Array.isArray(d.factors) ? d.factors : [];
-    box.innerHTML = factors.map((f) => {
-      const s = f.score;
-      const color = s == null ? "#8b9bb0" : (s > 0.15 ? "#ef5350" : (s < -0.15 ? "#26a69a" : "#f59e0b"));
-      return `<div style="display:grid;grid-template-columns:1fr auto;gap:8px;padding:8px 0;border-top:1px solid rgba(255,255,255,.06);">
-        <div><strong>${f.name || f.key || "因子"}</strong> <span class="sub">权重 ${fmt(f.base_weight,0)}</span>
-        <div class="sub" style="margin-top:2px;">${f.reading || f.detail || ""}</div></div>
-        <div style="font-weight:700;color:${color}">${fmt(s,2)}</div>
-      </div>`;
-    }).join("") || '<p class="sub">暂无因子</p>';
+    renderNgBanner(d);
+    renderNgMeter(d);
+    renderNgAdvice(d.advice);
+    renderNgEvents(d.events);
+    renderNgCalculator(d);
+    renderNgFactors(d.factors);
+    renderNgNews(d.news);
+    renderNgHistory(d.history);
+    renderNgPriceChart(d);
+    renderNgCurveChart(d.curve);
+    renderNgStorageChart(d.storage);
+    renderNgWeatherChart(d.weather);
+    renderNgLngChart(d.lng);
+    setTimeout(resizeNgCharts, 60);
+  }
 
-    const newsUl = el("ng-news");
-    const items = (d.news && (d.news.items || d.news.articles || d.news)) || [];
-    const list = Array.isArray(items) ? items.slice(0, 6) : [];
-    newsUl.innerHTML = list.length ? list.map((n) => {
-      const t = n.title || n.headline || "新闻";
-      const u = n.url || n.link || "#";
-      return `<li><a href="${u}" target="_blank" rel="noopener">${t}</a></li>`;
-    }).join("") : "<li>暂无新闻</li>";
+  function renderNgBanner(data) {
+    const pill = el("ng-season-pill");
+    if (pill) pill.textContent = data.season_cn || data.season || "季节模式";
 
-    const histUl = el("ng-history");
-    const hist = Array.isArray(d.history) ? d.history.slice(-6).reverse() : [];
-    histUl.innerHTML = hist.length ? hist.map((h) => {
-      const t = h.time || h.ts || h.date || "";
-      const s = h.score ?? h.composite_100 ?? h.composite;
-      return `<li>${t} · 分 ${fmt(s,1)} · 价 ${fmt(h.price,3)}</li>`;
-    }).join("") : "<li>暂无历史</li>";
+    const p = data.price || {};
+    const elPrice = el("ng-kpi-price");
+    const elChg1d = el("ng-kpi-chg1d");
+    const elChg5d = el("ng-kpi-chg5d");
+    const elChg21d = el("ng-kpi-chg21d");
+    const elPct52 = el("ng-kpi-pct52");
+    const elRange52 = el("ng-kpi-range52");
+    const elAtr = el("ng-kpi-atr");
+    const elVol = el("ng-kpi-vol");
 
-    const chartEl = el("ng-chart");
-    const bars = (d.price && d.price.bars) || [];
-    if (window.echarts && chartEl && bars.length) {
-      const chart = echarts.init(chartEl);
-      chart.setOption({
-        backgroundColor: "transparent",
-        tooltip: { trigger: "axis" },
-        grid: { left: 48, right: 12, top: 20, bottom: 40 },
-        xAxis: { type: "category", data: bars.map((b) => b.date), axisLabel: { color: "#8b9bb0" } },
-        yAxis: { scale: true, axisLabel: { color: "#8b9bb0" }, splitLine: { lineStyle: { color: "rgba(255,255,255,.06)" } } },
-        dataZoom: [{ type: "inside" }, { type: "slider", height: 16, bottom: 6 }],
-        series: [{
-          type: "candlestick", name: "NG",
-          data: bars.map((b) => [b.open, b.close, b.low, b.high]),
-          itemStyle: { color: "#ef5350", color0: "#26a69a", borderColor: "#ef5350", borderColor0: "#26a69a" }
-        }]
-      });
-      window.addEventListener("resize", () => chart.resize());
+    if (elPrice) elPrice.textContent = p.price != null ? `$${ngFmt(p.price, 3)}` : "—";
+    if (elChg1d) {
+      const v = p.chg_1d;
+      if (v != null) {
+        const cls = v > 0 ? "up" : v < 0 ? "down" : "flat";
+        elChg1d.innerHTML = `<span class="${cls}">${v > 0 ? "+" : ""}${ngFmt(v, 2)}%</span> (日)`;
+      } else elChg1d.textContent = "—";
     }
+    if (elChg5d) {
+      const v = p.chg_5d;
+      const cls = v > 0 ? "up" : v < 0 ? "down" : "flat";
+      elChg5d.innerHTML = v != null ? `1周: <span class="${cls}">${v > 0 ? "+" : ""}${ngFmt(v, 2)}%</span>` : "—";
+    }
+    if (elChg21d) {
+      const v = p.chg_21d;
+      const cls = v > 0 ? "up" : v < 0 ? "down" : "flat";
+      elChg21d.innerHTML = v != null ? `1月: <span class="${cls}">${v > 0 ? "+" : ""}${ngFmt(v, 2)}%</span>` : "—";
+    }
+    if (elPct52) elPct52.textContent = p.pct52 != null ? `${ngFmt(p.pct52, 1)}%` : "—";
+    if (elRange52) {
+      elRange52.textContent = (p.lo52 != null && p.hi52 != null)
+        ? `$${ngFmt(p.lo52, 2)} ~ $${ngFmt(p.hi52, 2)}`
+        : "—";
+    }
+    if (elAtr) elAtr.textContent = p.atr14 != null ? `$${ngFmt(p.atr14, 3)}` : "—";
+    if (elVol) elVol.textContent = p.vol20 != null ? `${ngFmt(p.vol20, 1)}%` : "—";
+  }
+
+  function renderNgMeter(data) {
+    const score = data.composite_100 != null ? data.composite_100 : (data.composite != null ? data.composite * 100 : 0);
+    const conf = data.confidence != null ? data.confidence : 0;
+    const bias = (data.advice && data.advice.bias_cn) || "中性震荡";
+
+    const elConf = el("ng-conf-badge");
+    const elScore = el("ng-composite-score");
+    const elBias = el("ng-bias-tag");
+    const elBar = el("ng-meter-bar");
+
+    if (elConf) elConf.textContent = `置信度 ${ngFmt(conf, 0)}%`;
+    if (elScore) {
+      elScore.textContent = `${score > 0 ? "+" : ""}${ngFmt(score, 1)}`;
+      elScore.className = `meter-score-large mono ${score > 5 ? "up" : score < -5 ? "down" : "flat"}`;
+    }
+    if (elBias) {
+      elBias.textContent = bias;
+      elBias.className = `meter-bias-tag ${score > 5 ? "bull" : score < -5 ? "bear" : "neutral"}`;
+    }
+    if (elBar) {
+      const capped = Math.max(-100, Math.min(100, score));
+      if (capped >= 0) {
+        elBar.style.left = "50%";
+        elBar.style.width = `${(capped / 100) * 50}%`;
+        elBar.style.backgroundColor = "#ef5350";
+      } else {
+        const w = (Math.abs(capped) / 100) * 50;
+        elBar.style.left = `${50 - w}%`;
+        elBar.style.width = `${w}%`;
+        elBar.style.backgroundColor = "#26a69a";
+      }
+    }
+  }
+
+  function renderNgAdvice(advice) {
+    if (!advice) return;
+    const elHorizon = el("ng-advice-horizon");
+    const elAction = el("ng-action-pill");
+    const elSummary = el("ng-advice-summary");
+    const elEntry = el("ng-level-entry");
+    const elStop = el("ng-level-stop");
+    const elTarget = el("ng-level-target");
+    const elRr = el("ng-level-rr");
+    const elInval = el("ng-inval-list");
+    const elRisk = el("ng-risk-list");
+
+    if (elHorizon) elHorizon.textContent = advice.horizon || "1–3周波段 · 动态ATR风险预算";
+    if (elAction) {
+      elAction.textContent = advice.action || advice.bias_cn || "观望";
+      const b = advice.bias || "";
+      const cls = b.includes("long") ? "high" : b.includes("short") ? "low" : "mid";
+      elAction.className = `tag-pill ${cls}`;
+    }
+    if (elSummary) elSummary.textContent = advice.summary || "—";
+    if (elEntry) {
+      elEntry.textContent = (advice.entry && advice.entry.length === 2)
+        ? `$${ngFmt(advice.entry[0], 3)} ~ $${ngFmt(advice.entry[1], 3)}`
+        : "观望区间无开仓建议";
+    }
+    if (elStop) elStop.textContent = advice.stop != null ? `$${ngFmt(advice.stop, 3)}` : "—";
+    if (elTarget) {
+      elTarget.textContent = (advice.targets && advice.targets.length)
+        ? advice.targets.map((t, i) => `T${i + 1}: $${ngFmt(t, 3)}`).join(" / ")
+        : "—";
+    }
+    if (elRr) {
+      const rrTxt = advice.rr != null ? `1 : ${ngFmt(advice.rr, 1)}` : "—";
+      const szTxt = advice.size_mult != null ? `${(advice.size_mult * 100).toFixed(0)}%` : "—";
+      elRr.textContent = `${rrTxt} | 仓位: ${szTxt}`;
+    }
+    if (elInval) {
+      const items = advice.invalidation || [];
+      elInval.innerHTML = items.length
+        ? items.map((inv) => `<li>${inv}</li>`).join("")
+        : `<li>依日线收盘均线与 ATR 防守。</li>`;
+    }
+    if (elRisk) {
+      const risks = advice.risks || [];
+      elRisk.innerHTML = risks.length
+        ? risks.map((r) => `<li>${r}</li>`).join("")
+        : `<li>暂无额外风险提示。</li>`;
+    }
+  }
+
+  function renderNgEvents(events) {
+    const list = el("ng-events-list");
+    if (!list) return;
+    if (!events || !events.length) {
+      list.innerHTML = `<div class="empty">暂无近期重大事件</div>`;
+      return;
+    }
+    list.innerHTML = events.map((ev) => {
+      const isUrgent = Number(ev.in_hours) <= 24;
+      const hoursTxt = Number(ev.in_hours) < 24
+        ? `${ngFmt(ev.in_hours, 1)}小时后`
+        : `${ngFmt(Number(ev.in_hours) / 24, 1)}天后`;
+      return `
+        <div class="event-item">
+          <div>
+            <div class="event-name">${ev.name || "事件"}</div>
+            <div class="event-note">${ev.time_bj || ev.time_et || ""} · ${ev.note || ""}</div>
+          </div>
+          <span class="event-badge ${isUrgent ? "urgent" : "normal"}">${hoursTxt}</span>
+        </div>`;
+    }).join("");
+  }
+
+  function renderNgCalculator(data) {
+    const p = (data && data.price && data.price.price) || 0;
+    const atr = (data && data.price && data.price.atr14) || 0;
+    const multMap = { NG: 10000, QG: 2500, MNG: 1000 };
+    const contract = ngState.calcContract || "MNG";
+    const mult = multMap[contract] || 1000;
+    const lots = ngState.calcLots || 1;
+    const notional = p * mult * lots;
+
+    const elNotional = el("ng-calc-notional");
+    if (elNotional) elNotional.textContent = `名义价值: $${ngFmt(notional, 0)}`;
+
+    const tickVal = 0.001 * mult * lots;
+    const atrVal = atr * mult * lots;
+    let stopVal = atrVal * 2;
+    if (data && data.advice && data.advice.stop != null && p) {
+      stopVal = Math.abs(p - data.advice.stop) * mult * lots;
+    }
+    const elMetrics = el("ng-calc-metrics");
+    if (elMetrics) {
+      elMetrics.innerHTML = `
+        <div class="calc-m-item">每 0.001 波动<b>$${ngFmt(tickVal, 2)}</b></div>
+        <div class="calc-m-item">单日 ATR 波动<b>±$${ngFmt(atrVal, 1)}</b></div>
+        <div class="calc-m-item">建议止损风控额<b>-$${ngFmt(stopVal, 1)}</b></div>`;
+    }
+  }
+
+  function renderNgFactors(factors) {
+    const body = el("ng-factors-body");
+    if (!body) return;
+    if (!factors || !factors.length) {
+      body.innerHTML = `<tr><td colspan="6" class="empty">暂无因子数据</td></tr>`;
+      return;
+    }
+    body.innerHTML = factors.map((f) => {
+      const score = f.score != null ? f.score * 100 : null;
+      const weight = f.weight != null ? `${(f.weight * 100).toFixed(0)}%` : (f.base_weight != null ? `${f.base_weight}%` : "—");
+      const contrib = f.contribution != null ? (f.contribution * 100) : null;
+      const scoreCls = score != null ? (score > 10 ? "up" : score < -10 ? "down" : "flat") : "flat";
+      const contribCls = contrib != null ? (contrib > 1 ? "up" : contrib < -1 ? "down" : "flat") : "flat";
+      const why = f.why || "";
+      const detail = f.detail || "";
+      const explain = why && detail && why !== detail ? `${why}<br/><span style="color:#8b9bb4">${detail}</span>` : (why || detail || "—");
+      return `
+        <tr>
+          <td class="factor-name-cell">${f.name || f.key || "因子"}</td>
+          <td class="num mono">${weight}</td>
+          <td class="num mono ${scoreCls}">${score != null ? `${score > 0 ? "+" : ""}${ngFmt(score, 1)}` : "—"}</td>
+          <td class="num mono ${contribCls}"><strong>${contrib != null ? `${contrib > 0 ? "+" : ""}${ngFmt(contrib, 1)}` : "—"}</strong></td>
+          <td class="factor-read-cell">${f.reading || "—"}</td>
+          <td class="factor-detail-cell">${explain}</td>
+        </tr>`;
+    }).join("");
+  }
+
+  function renderNgNews(news) {
+    const list = el("ng-news-list");
+    const meta = el("ng-news-meta");
+    if (!list) return;
+    const items = (news && news.items) || [];
+    if (meta && news) {
+      const parts = [];
+      if (news.n_total != null) parts.push(`共 ${news.n_total} 条`);
+      if (news.n_directional != null) parts.push(`可判向 ${news.n_directional}`);
+      if (news.n_bull != null) parts.push(`利多 ${news.n_bull}`);
+      if (news.n_bear != null) parts.push(`利空 ${news.n_bear}`);
+      meta.textContent = parts.length
+        ? `检索覆盖：LNG · 天气 · EIA · 产量 · 欧洲 ｜ ${parts.join(" · ")}`
+        : meta.textContent;
+    }
+    const cat = ngState.newsCat || "all";
+    const filtered = cat === "all" ? items : items.filter((n) => n.cat_key === cat || n.category === cat);
+    if (!filtered.length) {
+      list.innerHTML = `<div class="empty">暂无该分类的情报</div>`;
+      return;
+    }
+    list.innerHTML = filtered.slice(0, 40).map((n) => {
+      const dirCls = n.direction > 0 ? "bull" : n.direction < 0 ? "bear" : "neutral";
+      const dirText = n.direction > 0 ? "利多 Bullish" : n.direction < 0 ? "利空 Bearish" : "中性 Neutral";
+      const weightPct = n.weight != null ? Math.round(n.weight * 100) : 50;
+      const catName = n.category || n.cat_key || "情报";
+      const href = n.link || n.url || "#";
+      return `
+        <div class="news-item-card">
+          <div class="news-item-top">
+            <div class="news-tags">
+              <span class="news-cat-pill">${catName}</span>
+              <span class="news-impact-pill ${dirCls}">${dirText}</span>
+              <span class="tag-pill">影响权重 ${weightPct}%</span>
+            </div>
+            <span class="news-time mono">${n.time || (n.age_h != null ? ngFmt(n.age_h, 1) + "小时前" : "")}</span>
+          </div>
+          <a class="news-title-link" href="${href}" target="_blank" rel="noopener">${n.title || "新闻"}</a>
+          <div class="news-item-source">来源: ${n.source || "网络检索"}</div>
+          <div class="news-explain-box"><b>传导机制：</b>${n.explain || n.reason || "综合供需与宏观传导"}</div>
+        </div>`;
+    }).join("");
+  }
+
+  function renderNgHistory(history) {
+    const histUl = el("ng-history");
+    if (!histUl) return;
+    const hist = Array.isArray(history) ? history.slice(-8).reverse() : [];
+    histUl.innerHTML = hist.length
+      ? hist.map((h) => {
+          const t = h.time || h.ts || h.date || "";
+          const s = h.score ?? h.composite_100 ?? h.composite;
+          return `<li>${t} · 分 ${ngFmt(s, 1)} · 价 ${ngFmt(h.price, 3)}</li>`;
+        }).join("")
+      : "<li>暂无历史</li>";
+  }
+
+  function renderNgPriceChart(data) {
+    const chartEl = el("ng-chart");
+    const bars = (data.price && data.price.bars) || [];
+    if (!window.echarts || !chartEl || !bars.length) return;
+    if (!ngState.priceChart) ngState.priceChart = echarts.init(chartEl);
+    ngState.priceChart.setOption({
+      backgroundColor: "transparent",
+      tooltip: { trigger: "axis" },
+      grid: { left: 48, right: 12, top: 20, bottom: 40 },
+      xAxis: { type: "category", data: bars.map((b) => b.date), axisLabel: { color: "#8b9bb0" } },
+      yAxis: { scale: true, axisLabel: { color: "#8b9bb0" }, splitLine: { lineStyle: { color: "rgba(255,255,255,.06)" } } },
+      dataZoom: [{ type: "inside" }, { type: "slider", height: 16, bottom: 6 }],
+      series: [{
+        type: "candlestick", name: "NG",
+        data: bars.map((b) => [b.open, b.close, b.low, b.high]),
+        itemStyle: { color: "#ef5350", color0: "#26a69a", borderColor: "#ef5350", borderColor0: "#26a69a" }
+      }]
+    }, true);
+  }
+
+  function renderNgCurveChart(curve) {
+    const chart = getNgChart("chart-ng-curve");
+    if (!chart) return;
+    const pts = (curve && curve.points) || [];
+    if (!pts.length) { chart.clear(); return; }
+    const cats = pts.map((p) => p.label || `${p.year % 100}${String(p.month).padStart(2, "0")}`);
+    const vals = pts.map((p) => p.price);
+    const hint = el("ng-curve-hint");
+    if (hint && curve.m1_m2_pct != null) {
+      const isContango = curve.m1_m2_pct > 0;
+      hint.textContent = `${isContango ? "Contango (次月升水 " : "Backwardation (次月贴水 "}${ngFmt(Math.abs(curve.m1_m2_pct), 1)}%)`;
+      hint.className = `hint ${isContango ? "low" : "high"}`;
+    }
+    chart.setOption({
+      backgroundColor: "transparent",
+      tooltip: {
+        trigger: "axis",
+        backgroundColor: "#16202c",
+        borderColor: "#2a3a4f",
+        textStyle: { color: "#e5efff", fontSize: 11 },
+        formatter: (params) => {
+          const pt = pts[params[0].dataIndex];
+          if (!pt) return "";
+          return `<b>${pt.ticker}</b> (${pt.label})<br/>价格: <b>$${ngFmt(pt.price, 3)}</b>/MMBtu<br/>到期: ${pt.expiry || "—"}`;
+        },
+      },
+      grid: { left: 45, right: 15, top: 20, bottom: 25 },
+      xAxis: { type: "category", data: cats, axisLabel: { color: "#8b9bb0", fontSize: 10 }, axisLine: { lineStyle: { color: "#243041" } } },
+      yAxis: { type: "value", scale: true, axisLabel: { color: "#8b9bb0", fontSize: 10, formatter: (v) => `$${v.toFixed(2)}` }, splitLine: { lineStyle: { color: "#192230" } } },
+      series: [{
+        name: "远期曲线", type: "line", data: vals, smooth: 0.25, symbolSize: 6,
+        itemStyle: { color: "#3d9cf0" }, lineStyle: { width: 2, color: "#3d9cf0" },
+        areaStyle: { color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+          { offset: 0, color: "rgba(61,156,240,0.3)" }, { offset: 1, color: "rgba(61,156,240,0.0)" }
+        ]) }
+      }]
+    }, true);
+  }
+
+  function renderNgStorageChart(storage) {
+    const chart = getNgChart("chart-ng-storage");
+    if (!chart) return;
+    const s = storage && storage.seasonal;
+    if (!s || !s.weeks) { chart.clear(); return; }
+    const weeks = s.weeks;
+    const min5 = s.min5 || [];
+    const max5 = s.max5 || [];
+    const avg5 = s.avg5 || [];
+    const diff = max5.map((v, i) => (v != null && min5[i] != null ? v - min5[i] : 0));
+    const thisYearMap = s.this_year || {};
+    const lastYearMap = s.last_year || {};
+    const thisYear = weeks.map((w) => (thisYearMap[w] != null ? thisYearMap[w] : (thisYearMap[String(w)] != null ? thisYearMap[String(w)] : null)));
+    const lastYear = weeks.map((w) => (lastYearMap[w] != null ? lastYearMap[w] : (lastYearMap[String(w)] != null ? lastYearMap[String(w)] : null)));
+    const hint = el("ng-storage-hint");
+    if (hint && storage) {
+      const bits = [];
+      if (storage.stocks != null) bits.push(`库存 ${ngFmt(storage.stocks, 0)} Bcf`);
+      if (storage.vs_avg5 != null) bits.push(`vs5年 ${storage.vs_avg5 > 0 ? "+" : ""}${ngFmt(storage.vs_avg5, 0)} Bcf`);
+      if (storage.proj_end != null) bits.push(`季末推演 ${ngFmt(storage.proj_end, 0)}`);
+      if (bits.length) hint.textContent = bits.join(" · ");
+    }
+    chart.setOption({
+      backgroundColor: "transparent",
+      tooltip: {
+        trigger: "axis",
+        backgroundColor: "#16202c",
+        borderColor: "#2a3a4f",
+        textStyle: { color: "#e5efff", fontSize: 11 },
+        formatter: (params) => {
+          const w = params[0].name;
+          const idx = weeks.indexOf(Number(w));
+          const i = idx >= 0 ? idx : Number(w) - 1;
+          let h = `<b>第 ${w} 周 EIA 库存储备 (Bcf)</b><br/>`;
+          if (thisYear[i] != null) h += `当年(${s.year}): <b style="color:#ef5350">${thisYear[i]} Bcf</b><br/>`;
+          if (lastYear[i] != null) h += `去年(${s.year - 1}): <b style="color:#26a69a">${lastYear[i]} Bcf</b><br/>`;
+          if (avg5[i] != null) h += `5年均值: ${avg5[i]} Bcf<br/>`;
+          if (min5[i] != null && max5[i] != null) h += `5年范围: ${min5[i]} ~ ${max5[i]} Bcf`;
+          return h;
+        },
+      },
+      legend: { data: [`${s.year}年`, `${s.year - 1}年`, "5年均值", "5年区间"], textStyle: { color: "#8b9bb0", fontSize: 10 }, top: 0, right: 10 },
+      grid: { left: 45, right: 15, top: 28, bottom: 25 },
+      xAxis: { type: "category", data: weeks, axisLabel: { color: "#8b9bb0", fontSize: 10, formatter: (v) => (v % 8 === 1 ? `W${v}` : "") }, axisLine: { lineStyle: { color: "#243041" } } },
+      yAxis: { type: "value", scale: true, axisLabel: { color: "#8b9bb0", fontSize: 10 }, splitLine: { lineStyle: { color: "#192230" } } },
+      series: [
+        { name: "区间底", type: "line", data: min5, stack: "band", lineStyle: { opacity: 0 }, showSymbol: false },
+        { name: "5年区间", type: "line", data: diff, stack: "band", lineStyle: { opacity: 0 }, areaStyle: { color: "rgba(61, 156, 240, 0.12)" }, showSymbol: false },
+        { name: "5年均值", type: "line", data: avg5, lineStyle: { type: "dashed", width: 1.5, color: "#8b9bb0" }, showSymbol: false },
+        { name: `${s.year - 1}年`, type: "line", data: lastYear, lineStyle: { width: 1.2, color: "rgba(38, 166, 154, 0.6)" }, showSymbol: false },
+        { name: `${s.year}年`, type: "line", data: thisYear, lineStyle: { width: 2.2, color: "#ef5350" }, symbolSize: 4, itemStyle: { color: "#ef5350" } }
+      ]
+    }, true);
+  }
+
+  function renderNgWeatherChart(weather) {
+    const chart = getNgChart("chart-ng-weather");
+    if (!chart) return;
+    const daily = (weather && weather.daily) || [];
+    if (!daily.length) { chart.clear(); return; }
+    const dates = daily.map((d) => String(d.date).slice(5));
+    const tdd = daily.map((d) => d.tdd);
+    const normal = daily.map((d) => d.normal_tdd);
+    const diff = daily.map((d) => (d.tdd != null && d.normal_tdd != null ? Number((d.tdd - d.normal_tdd).toFixed(1)) : 0));
+    const hint = el("ng-weather-hint");
+    if (hint) {
+      const avgDev = diff.length ? diff.reduce((a, b) => a + b, 0) / diff.length : 0;
+      hint.textContent = `未来${daily.length}日度日偏差均值 ${avgDev > 0 ? "+" : ""}${ngFmt(avgDev, 1)}（正=偏冷）`;
+    }
+    chart.setOption({
+      backgroundColor: "transparent",
+      tooltip: {
+        trigger: "axis",
+        backgroundColor: "#16202c",
+        borderColor: "#2a3a4f",
+        textStyle: { color: "#e5efff", fontSize: 11 },
+        formatter: (params) => {
+          const idx = params[0].dataIndex;
+          const d = daily[idx];
+          return `<b>${d.date} 需求度日预报</b><br/>预报总度日 (TDD): <b>${d.tdd}</b> (HDD ${d.hdd} / CDD ${d.cdd})<br/>常态均值: ${d.normal_tdd || "—"}<br/>偏差: <b style="color:${diff[idx] > 0 ? "#ef5350" : "#26a69a"}">${diff[idx] > 0 ? "+" : ""}${diff[idx]} 度日</b>`;
+        },
+      },
+      legend: { data: ["预报度日(TDD)", "常态度日", "度日偏差"], textStyle: { color: "#8b9bb0", fontSize: 10 }, top: 0, right: 10 },
+      grid: { left: 35, right: 35, top: 28, bottom: 25 },
+      xAxis: { type: "category", data: dates, axisLabel: { color: "#8b9bb0", fontSize: 10 }, axisLine: { lineStyle: { color: "#243041" } } },
+      yAxis: [
+        { type: "value", scale: true, axisLabel: { color: "#8b9bb0", fontSize: 10 }, splitLine: { lineStyle: { color: "#192230" } } },
+        { type: "value", scale: true, axisLabel: { color: "#8b9bb0", fontSize: 10 }, splitLine: { show: false } }
+      ],
+      series: [
+        { name: "预报度日(TDD)", type: "bar", data: tdd, itemStyle: { color: "rgba(61, 156, 240, 0.75)" } },
+        { name: "常态度日", type: "line", data: normal, lineStyle: { width: 1.5, type: "dashed", color: "#f6c945" }, itemStyle: { color: "#f6c945" }, symbolSize: 4 },
+        { name: "度日偏差", type: "bar", yAxisIndex: 1, data: diff.map((v) => ({ value: v, itemStyle: { color: v >= 0 ? "rgba(239, 83, 80, 0.65)" : "rgba(38, 166, 154, 0.65)" } })) }
+      ]
+    }, true);
+  }
+
+  function renderNgLngChart(lng) {
+    const chart = getNgChart("chart-ng-lng");
+    if (!chart) return;
+    const hist = (lng && lng.history) || [];
+    if (!hist.length) { chart.clear(); return; }
+    const dates = hist.map((h) => String(h.date).slice(5));
+    const spreads = hist.map((h) => h.spread);
+    const hint = el("ng-lng-hint");
+    if (hint && lng.spread != null) {
+      hint.textContent = `当前价差 $${ngFmt(lng.spread, 2)}/MMBtu (完全成本线 ~$4.00)`;
+    }
+    chart.setOption({
+      backgroundColor: "transparent",
+      tooltip: {
+        trigger: "axis",
+        backgroundColor: "#16202c",
+        borderColor: "#2a3a4f",
+        textStyle: { color: "#e5efff", fontSize: 11 },
+        formatter: (params) => {
+          const idx = params[0].dataIndex;
+          const h = hist[idx];
+          return `<b>${h.date}</b><br/>跨大西洋 LNG 出口套利 (TTF − HH):<br/><b>$${ngFmt(h.spread, 3)}</b> / MMBtu<br/><span style="color:#8b9bb0">出口成本盈亏平衡线: ~$4.00/MMBtu</span>`;
+        },
+      },
+      grid: { left: 45, right: 15, top: 20, bottom: 25 },
+      xAxis: { type: "category", data: dates, axisLabel: { color: "#8b9bb0", fontSize: 10 }, axisLine: { lineStyle: { color: "#243041" } } },
+      yAxis: { type: "value", scale: true, axisLabel: { color: "#8b9bb0", fontSize: 10, formatter: (v) => `$${v.toFixed(1)}` }, splitLine: { lineStyle: { color: "#192230" } } },
+      series: [{
+        name: "TTF - HH 套利价差", type: "line", data: spreads, smooth: 0.2, symbolSize: 4,
+        itemStyle: { color: "#f6c945" }, lineStyle: { width: 2, color: "#f6c945" },
+        areaStyle: { color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+          { offset: 0, color: "rgba(246, 201, 69, 0.25)" }, { offset: 1, color: "rgba(246, 201, 69, 0.0)" }
+        ]) },
+        markLine: { symbol: "none", data: [{ yAxis: 4.0, lineStyle: { color: "#ef5350", type: "dashed" }, label: { formatter: "成本线 $4", color: "#ef5350", fontSize: 10 } }] }
+      }]
+    }, true);
   }
 
   function showNgSection() {
@@ -2854,6 +3284,34 @@
     section.style.display = "";
     renderNgDashboard();
     section.scrollIntoView({ behavior: "smooth", block: "start" });
+    setTimeout(resizeNgCharts, 120);
+  }
+
+  function bindNgControls() {
+    el("btn-ng")?.addEventListener("click", showNgSection);
+    const mobNg = document.querySelector('#mobile-bottom-nav [data-target="ng-section"]');
+    mobNg?.addEventListener("click", (e) => { e.preventDefault(); showNgSection(); });
+
+    const filter = el("ng-news-filter");
+    filter?.querySelectorAll("button").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        filter.querySelectorAll("button").forEach((b) => b.classList.remove("active"));
+        btn.classList.add("active");
+        ngState.newsCat = btn.getAttribute("data-cat") || "all";
+        renderNgNews((window.__STATIC_NG__ || {}).news);
+      });
+    });
+
+    el("ng-calc-contract")?.addEventListener("change", (e) => {
+      ngState.calcContract = e.target.value || "MNG";
+      renderNgCalculator(window.__STATIC_NG__);
+    });
+    el("ng-calc-lots")?.addEventListener("input", (e) => {
+      const n = parseInt(e.target.value, 10);
+      ngState.calcLots = Number.isFinite(n) && n > 0 ? n : 1;
+      renderNgCalculator(window.__STATIC_NG__);
+    });
+    window.addEventListener("resize", resizeNgCharts);
   }
 
   document.addEventListener("DOMContentLoaded", () => {
@@ -2863,9 +3321,6 @@
     loadDailyBriefing();
     loadBacktestReview(false);
     loadStressTest(false);
-    el("btn-ng")?.addEventListener("click", showNgSection);
-    // keep section hidden until clicked; still pre-render data into nodes when opened
-    const mobNg = document.querySelector('#mobile-bottom-nav [data-target="ng-section"]');
-    mobNg?.addEventListener("click", (e) => { e.preventDefault(); showNgSection(); });
+    bindNgControls();
   });
 })();
