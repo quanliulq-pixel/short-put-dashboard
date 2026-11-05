@@ -2771,6 +2771,91 @@
     });
   }
 
+
+  function renderNgDashboard() {
+    const d = window.__STATIC_NG__;
+    const section = el("ng-section");
+    const st = el("ng-status-text");
+    const dot = el("ng-status-dot");
+    if (!section) return;
+    if (!d) {
+      if (st) st.textContent = "无 NG 快照";
+      return;
+    }
+    const fmt = (n, dig=1) => (n == null || Number.isNaN(Number(n))) ? "—" : Number(n).toFixed(dig);
+    const cls = (n) => n == null ? "" : (n > 0 ? "pos" : (n < 0 ? "neg" : ""));
+    el("ng-season").textContent = d.season_cn || d.season || "季节 —";
+    el("ng-summary").textContent = (d.advice && (d.advice.summary || d.advice.action)) || "—";
+    el("ng-action").textContent = (d.advice && d.advice.action) || "";
+    el("ng-bias").textContent = (d.advice && d.advice.bias_cn) || "—";
+    const comp = d.composite_100;
+    const compEl = el("ng-comp");
+    compEl.textContent = fmt(comp, 1);
+    compEl.className = "k-num " + cls(comp);
+    el("ng-conf").textContent = fmt(d.confidence, 0);
+    const px = (d.price && d.price.price != null) ? d.price.price : null;
+    el("ng-px").textContent = fmt(px, 3);
+    if (st) st.textContent = d.updated_at ? `已更新 ${String(d.updated_at).slice(11, 19) || d.updated_at}` : "已加载快照";
+    if (dot) dot.style.background = "#26a69a";
+
+    const box = el("ng-factors");
+    const factors = Array.isArray(d.factors) ? d.factors : [];
+    box.innerHTML = factors.map((f) => {
+      const s = f.score;
+      const color = s == null ? "#8b9bb0" : (s > 0.15 ? "#ef5350" : (s < -0.15 ? "#26a69a" : "#f59e0b"));
+      return `<div style="display:grid;grid-template-columns:1fr auto;gap:8px;padding:8px 0;border-top:1px solid rgba(255,255,255,.06);">
+        <div><strong>${f.name || f.key || "因子"}</strong> <span class="sub">权重 ${fmt(f.base_weight,0)}</span>
+        <div class="sub" style="margin-top:2px;">${f.reading || f.detail || ""}</div></div>
+        <div style="font-weight:700;color:${color}">${fmt(s,2)}</div>
+      </div>`;
+    }).join("") || '<p class="sub">暂无因子</p>';
+
+    const newsUl = el("ng-news");
+    const items = (d.news && (d.news.items || d.news.articles || d.news)) || [];
+    const list = Array.isArray(items) ? items.slice(0, 6) : [];
+    newsUl.innerHTML = list.length ? list.map((n) => {
+      const t = n.title || n.headline || "新闻";
+      const u = n.url || n.link || "#";
+      return `<li><a href="${u}" target="_blank" rel="noopener">${t}</a></li>`;
+    }).join("") : "<li>暂无新闻</li>";
+
+    const histUl = el("ng-history");
+    const hist = Array.isArray(d.history) ? d.history.slice(-6).reverse() : [];
+    histUl.innerHTML = hist.length ? hist.map((h) => {
+      const t = h.time || h.ts || h.date || "";
+      const s = h.score ?? h.composite_100 ?? h.composite;
+      return `<li>${t} · 分 ${fmt(s,1)} · 价 ${fmt(h.price,3)}</li>`;
+    }).join("") : "<li>暂无历史</li>";
+
+    const chartEl = el("ng-chart");
+    const bars = (d.price && d.price.bars) || [];
+    if (window.echarts && chartEl && bars.length) {
+      const chart = echarts.init(chartEl);
+      chart.setOption({
+        backgroundColor: "transparent",
+        tooltip: { trigger: "axis" },
+        grid: { left: 48, right: 12, top: 20, bottom: 40 },
+        xAxis: { type: "category", data: bars.map((b) => b.date), axisLabel: { color: "#8b9bb0" } },
+        yAxis: { scale: true, axisLabel: { color: "#8b9bb0" }, splitLine: { lineStyle: { color: "rgba(255,255,255,.06)" } } },
+        dataZoom: [{ type: "inside" }, { type: "slider", height: 16, bottom: 6 }],
+        series: [{
+          type: "candlestick", name: "NG",
+          data: bars.map((b) => [b.open, b.close, b.low, b.high]),
+          itemStyle: { color: "#ef5350", color0: "#26a69a", borderColor: "#ef5350", borderColor0: "#26a69a" }
+        }]
+      });
+      window.addEventListener("resize", () => chart.resize());
+    }
+  }
+
+  function showNgSection() {
+    const section = el("ng-section");
+    if (!section) return;
+    section.style.display = "";
+    renderNgDashboard();
+    section.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
   document.addEventListener("DOMContentLoaded", () => {
     bindEvents();
     loadRecommendations(false);
@@ -2778,5 +2863,9 @@
     loadDailyBriefing();
     loadBacktestReview(false);
     loadStressTest(false);
+    el("btn-ng")?.addEventListener("click", showNgSection);
+    // keep section hidden until clicked; still pre-render data into nodes when opened
+    const mobNg = document.querySelector('#mobile-bottom-nav [data-target="ng-section"]');
+    mobNg?.addEventListener("click", (e) => { e.preventDefault(); showNgSection(); });
   });
 })();

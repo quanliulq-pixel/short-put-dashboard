@@ -83,6 +83,7 @@
           <span class="status-dot" id="status-dot"></span>
           <span id="status-text">同步跨市场行情…</span>
         </div>
+        <button type="button" class="btn btn-outline" id="btn-ng" title="打开美气 Henry Hub 九因子看板">🔥 美气NG</button>
         <button type="button" class="btn btn-outline" id="btn-mobile-modal" title="在iPhone上扫码看盘或导出手机离线周报">📱 iPhone看盘</button>
         <button type="button" class="btn btn-gold" id="btn-refresh">立即重算推荐</button>
       </div>
@@ -850,6 +851,51 @@
       </div>
     </section>
 
+
+    <!-- 美气 NG · Henry Hub 九因子看板（与本站定时构建同步刷新） -->
+    <section class="panel-card" id="ng-section" style="display:none; margin-top:18px;">
+      <div class="panel-hdr" style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:space-between;">
+        <div>
+          <h2 style="margin:0;">美气 NG · Henry Hub 九因子</h2>
+          <p class="sub" style="margin:4px 0 0;">与本站同一套 GitHub Actions 定时重算推送；研究用途，非投资建议</p>
+        </div>
+        <div class="live-status"><span class="status-dot" id="ng-status-dot"></span><span id="ng-status-text">等待加载…</span></div>
+      </div>
+      <div class="regime-banner" style="margin-top:12px;">
+        <div class="regime-left">
+          <span class="regime-tag" id="ng-season">季节 —</span>
+          <span class="regime-text" id="ng-summary">加载中…</span>
+        </div>
+        <div class="kpi-group">
+          <div class="kpi-item"><span class="k-lbl">倾向</span><strong class="k-num" id="ng-bias">—</strong></div>
+          <div class="kpi-item"><span class="k-lbl">综合分</span><strong class="k-num" id="ng-comp">—</strong></div>
+          <div class="kpi-item"><span class="k-lbl">置信度</span><strong class="k-num" id="ng-conf">—</strong></div>
+          <div class="kpi-item"><span class="k-lbl">最新价</span><strong class="k-num" id="ng-px">—</strong></div>
+        </div>
+      </div>
+      <p class="sub" id="ng-action" style="margin:8px 0 12px;"></p>
+      <div style="display:grid;gap:14px;grid-template-columns:1.2fr .8fr;">
+        <div>
+          <h3 style="margin:0 0 8px;font-size:14px;">价格 K 线</h3>
+          <div id="ng-chart" style="height:320px;width:100%;"></div>
+        </div>
+        <div>
+          <h3 style="margin:0 0 8px;font-size:14px;">九因子</h3>
+          <div id="ng-factors"></div>
+        </div>
+      </div>
+      <div style="display:grid;gap:14px;grid-template-columns:1fr 1fr;margin-top:14px;">
+        <div>
+          <h3 style="margin:0 0 8px;font-size:14px;">新闻</h3>
+          <ul id="ng-news" class="sub" style="padding-left:18px;margin:0;"></ul>
+        </div>
+        <div>
+          <h3 style="margin:0 0 8px;font-size:14px;">最近评分</h3>
+          <ul id="ng-history" class="sub" style="padding-left:18px;margin:0;"></ul>
+        </div>
+      </div>
+    </section>
+
     <footer class="app-footer">
       <p>量化模型说明（v4.0 期权卖方 + 股期直接买卖双核实战版）：美股采用 BSM 定价并对跨季报窗口做跳空风险折价（Yahoo 真实财报日 + 估算日历双保险）；美期货、中国期货及中金所股指期权（MO/IO/HO）采用 Black-76 模型（b=0）并对主连换月跳空做平滑复权；支持 25-Delta Put 偏度与 7D/30D/60D 期限结构诊断、牛市看跌价差（Bull Put Spread）保护腿自动配对、车轮策略（Wheel Covered Call）接货备兑衔接、直接买卖股票/期货（做多正股/ETF · 双向做多/做空期货 · ATR波段止损 · 踏空临界点 S+P 对决）、实盘/模拟持仓止盈/移仓/硬止损动态雷达及 52~104 周滚动全样本实证检验。仅供量化研究参考，不构成投资建议。</p>
     </footer>
@@ -864,6 +910,7 @@
     <button type="button" data-target="portfolio-section">💼 持仓</button>
     <button type="button" data-target="screener-section">📋 全表</button>
     <button type="button" data-target="backtest-section">📊 实证</button>
+    <button type="button" data-target="ng-section">🔥 美气</button>
   </nav>
 
   <!-- iPhone 扫码看盘 & 离线周报导出弹窗 -->

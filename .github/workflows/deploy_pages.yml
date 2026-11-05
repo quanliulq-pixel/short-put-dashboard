@@ -37,7 +37,13 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Fetch latest market quotes & build full interactive terminal
-        run: python build_hf_static.py
+        run: |
+          python - <<'PY'
+          from ng_terminal.load_payload import load_ng_payload
+          d = load_ng_payload(force=True)
+          print("NG payload ready", d.get("updated_at"), d.get("composite_100"))
+          PY
+          python build_hf_static.py
 
       - name: Publish updated terminal to gh-pages branch
         env:
@@ -49,6 +55,6 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git checkout -b gh-pages
-          git add index.html .nojekyll
+          git add -A
           git commit -m "Auto-update Short Put Terminal ($(date '+%Y-%m-%d %H:%M:%S CST'))"
           git push -f "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" gh-pages

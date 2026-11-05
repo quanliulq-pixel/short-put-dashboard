@@ -117,6 +117,14 @@ def build_static_bundle() -> None:
         for inst in ALL_INSTRUMENTS
     }
 
+    print("3b. Loading Henry Hub NG nine-factor dashboard payload...")
+    try:
+        from ng_terminal.load_payload import load_ng_payload
+        ng_payload = load_ng_payload(force=os.environ.get("FORCE_REFRESH", "0") == "1")
+    except Exception as exc:
+        print(f"NG payload fallback empty: {exc}")
+        ng_payload = {"advice": {"bias_cn": "—", "action": "NG 暂不可用", "summary": ""}, "factors": [], "price": {}, "errors": [str(exc)]}
+
     with open(os.path.join(base_dir, "templates", "index.html"), "r", encoding="utf-8") as f:
         html_tpl = f.read()
     with open(os.path.join(base_dir, "static", "style.css"), "r", encoding="utf-8") as f:
@@ -135,6 +143,7 @@ window.__STATIC_PORTFOLIO_DEFAULT__ = {json.dumps(portfolio_bundle, ensure_ascii
 window.__STATIC_BRIEFING__ = {json.dumps(briefing_bundle, ensure_ascii=False, separators=(",", ":"))};
 window.__STATIC_BT_ALL__ = {json.dumps(bt_all, ensure_ascii=False, separators=(",", ":"))};
 window.__STATIC_STRESS__ = {json.dumps(stress_bundle, ensure_ascii=False, separators=(",", ":"))};
+window.__STATIC_NG__ = {json.dumps(ng_payload, ensure_ascii=False, separators=(",", ":"), default=str)};
 
 (function() {{
   const PF_STORAGE_KEY = "short_put_static_pf_v4";
