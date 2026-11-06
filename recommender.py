@@ -32,10 +32,17 @@ from data_engine import (
     get_real_iv_map,
 )
 from http_utils import cached, get_week_context, load_pickle, now_bj, save_pickle
-from options_math import build_payoff_curve, build_put_tiers, compute_vol_skew_and_term
+from options_math import (
+    build_payoff_curve,
+    build_put_tiers,
+    compute_vol_skew_and_term,
+    price_put_and_greeks,
+    risk_free_rate,
+    skew_adjusted_iv,
+)
 from pro_indicators import compute_cross_market_parity_map, compute_pro_indicators
 from spot_futures_engine import analyze_direct_underlying_trade
-from universe import ALL_INSTRUMENTS, get_instrument
+from universe import ALL_INSTRUMENTS, COST_TABLE_EFFECTIVE_DATE, get_instrument
 
 logger = logging.getLogger(__name__)
 
@@ -419,18 +426,25 @@ def _calibrate_implied_vol(
 
     real_ok = bool(real_iv_entry and 0.04 < float(real_iv_entry.get("atmIv", 0.0)) < 1.80)
     stale_quote = False
-    if real_ok and "期权链" in str(real_iv_entry.get("ivSource", "")):
-        # Sanity guard for single-name chain quotes (off-hours stale mids / wide spreads):
-        # reject if IV > 1.6x realized vol (2.2x when an earnings event sits inside the window).
+    iv_kind = str((real_iv_entry or {}).get("ivKind") or "")
+    if real_ok and iv_kind in ("", "chain") and "期权链" in str(real_iv_entry.get("ivSource", "")):
+        # Flag (do not discard) chain quotes that look elevated vs realized vol.
+        # Replacing them with a lower synthetic IV used to solve tighter/wrong strikes.
         rv_ref = max(hv20, hv60, 0.10)
         ratio_cap = 2.2 if earnings_in_window else 1.6
         if float(real_iv_entry["atmIv"]) > rv_ref * ratio_cap:
-            real_ok = False
             stale_quote = True
+    if not iv_kind:
+        if real_ok and "代理" in str((real_iv_entry or {}).get("ivSource") or ""):
+            iv_kind = "index_proxy"
+        elif real_ok:
+            iv_kind = "chain"
 
     if real_ok:
         atm_iv = float(real_iv_entry["atmIv"])
         iv_source = str(real_iv_entry.get("ivSource") or "🟢 实盘IV")
+        if stale_quote:
+            iv_source = iv_source + " · ⚠相对HV偏高待核验(未改用更低估算IV)"
         is_real_iv = True
     else:
         vrp_mult = 1.14
@@ -484,16 +498,17 @@ def _calibrate_implied_vol(
 
         atm_iv = (0.55 * structural_hv + 0.45 * regime_anchor) * vrp_mult + fear_bump
         atm_iv = max(0.08, min(atm_iv, 1.45))
-        iv_source = "⚪ 估算IV(期权链报价异常已剔除)" if stale_quote else "⚪ 估算IV"
+        iv_source = "⚪ 估算IV"
         is_real_iv = False
+        iv_kind = "synthetic"
 
     # Variance Risk Premium: ATM IV minus 20-day realized volatility
     vrp_pts = (atm_iv - hv20) * 100.0
 
-    # IV Rank blends HV rank with current IV/HV_median ratio
+    # HV/IV composite (NOT an exchange IV Rank). Keep key `ivRank` for UI compatibility.
     iv_vs_med = (atm_iv / max(hv_med_1y, 0.08)) - 1.0
     iv_rank = min(99.0, max(5.0, hv_rank * 0.72 + 22.0 + iv_vs_med * 35.0))
-    return atm_iv, round(iv_rank, 1), round(vrp_pts, 1), iv_source, is_real_iv
+    return atm_iv, round(iv_rank, 1), round(vrp_pts, 1), iv_source, is_real_iv, stale_quote, iv_kind
 
 
 def _classify_trend_regime(
@@ -567,6 +582,7 @@ def analyze_single_instrument(
     target_dte: int = 30,
     real_iv_entry: Optional[Dict[str, Any]] = None,
     parity_entry: Optional[Dict[str, Any]] = None,
+    backtest_mode: bool = False,
 ) -> Optional[Dict[str, Any]]:
     if not bars or len(bars) < 35:
         return None
@@ -621,11 +637,17 @@ def analyze_single_instrument(
     hv60 = _realized_vol(closes, 60)
     hv_rank, hv_med_1y = _hv_stats_1y(closes, hv20)
     earnings_info = _check_earnings_risk(inst, bars[-1]["t"], target_dte)
-    atm_iv, iv_rank, vrp_pts, iv_source, is_real_iv = _calibrate_implied_vol(
+    atm_iv, iv_rank, vrp_pts, iv_source, is_real_iv, stale_quote, iv_kind = _calibrate_implied_vol(
         inst, hv20, hv60, hv_med_1y, hv_rank, rsi, ret_1w, macro_regime,
         real_iv_entry=real_iv_entry,
         earnings_in_window=bool(earnings_info and earnings_info.get("inWindow")),
     )
+    premium_is_estimated = (not is_real_iv) or iv_kind in ("synthetic", "index_proxy", "etf_proxy") or stale_quote
+    if backtest_mode:
+        # Historical days have no live chain marks — always model premium.
+        premium_is_estimated = True
+        if "估算" not in iv_source and iv_kind == "synthetic":
+            iv_source = "⚪ 估算IV(回测模型)"
 
     supports = {
         "ma20": round(ma20, dp),
@@ -735,6 +757,8 @@ def analyze_single_instrument(
             "tone": c_tone,
             "label": cost_cfg.get("label", ""),
             "source": cost_cfg.get("source", ""),
+            "effectiveDate": cost_cfg.get("asof") or COST_TABLE_EFFECTIVE_DATE,
+            "costScoreDisabled": bool(backtest_mode),
         }
 
     # -----------------------------------------------------------------------
@@ -742,7 +766,7 @@ def analyze_single_instrument(
     # -----------------------------------------------------------------------
     # 1. Floor & Valuation Safety (0 - 30 pts) — Smooth Continuous Interpolation + Cost × Trend Matrix
     low_pct_blend = 0.45 * pct_3y + 0.55 * pct_5y
-    if cost_info:
+    if cost_info and not backtest_mode:
         vp = cost_info["vsPrimaryPct"]
         # Smooth continuous curve instead of step-function cliffs
         raw_cost_pts = _interp_linear(
@@ -812,7 +836,7 @@ def analyze_single_instrument(
     #    - 6 pts:  ATR Safety Cushion Multiple (Breakeven Buffer / Daily ATR14)
     ivr_pts = _interp_linear(iv_rank, [(10.0, 2.5), (35.0, 4.2), (60.0, 5.6), (85.0, 6.5)])
     raw_vrp_score = _interp_linear(vrp_pts, [(-3.0, 0.5), (0.0, 1.5), (3.5, 2.8), (7.0, 3.5)])
-    vrp_score_pts = raw_vrp_score if is_real_iv else min(1.8, raw_vrp_score)
+    vrp_score_pts = raw_vrp_score if (is_real_iv and iv_kind == "chain" and not stale_quote) else min(1.8, raw_vrp_score)
     # Earnings event vol inside the window is jump risk, not a harvestable premium:
     # cap IVR & VRP sub-scores at neutral so pre-earnings IV inflation cannot offset the earnings penalty.
     if earnings_info and earnings_info.get("inWindow"):
@@ -826,6 +850,9 @@ def analyze_single_instrument(
         yield_pts = _interp_linear(ann_ret, [(5.0, 1.2), (12.0, 2.5), (22.0, 3.5)])
     else:
         yield_pts = _interp_linear(ann_ret, [(10.0, 1.2), (24.0, 2.6), (40.0, 3.5)])
+    if premium_is_estimated:
+        # Model/proxy premium must not be scored as if it were an executable mid/bid yield.
+        yield_pts = min(yield_pts, 1.8)
 
     atr_mult = bal_tier["atrBufferMultiple"]
     atr_cushion_pts = _interp_linear(atr_mult, [(2.2, 1.2), (3.5, 3.2), (4.8, 5.0), (6.2, 6.0)])
@@ -887,24 +914,18 @@ def analyze_single_instrument(
             f"⚠️ 成本锚失效：现价低于表中现金成本 {abs(cost_info['vsCashPct']):.0f}%，成本数据可能已过时，"
             f"底部安全垫按中性计分，不再视为铁底"
         )
+    if backtest_mode:
+        risk_notes.append("回测模式：模型权利金 / 未用当日成本表计分 / 宏观为时点或有限校准")
+    if stale_quote:
+        risk_notes.append("期权链IV相对实现波动率偏高，已保留实盘IV并标注待核验，未替换为更低估算IV")
+    if premium_is_estimated:
+        risk_notes.append("权利金与年化为模型/代理IV估算，不可当作可成交中间价或买价")
+    if inst.get("id") == "US_FUT:NG":
+        risk_notes.append("NG卖Put评分与ng_terminal天然气期限结构终端是两套独立分析")
 
     if earnings_info and earnings_info.get("inWindow"):
         raw_total -= float(earnings_info["penalty"])
         risk_notes.append(earnings_info["warning"])
-
-    # Hard Circuit Breakers (Institutional Score Caps)
-    score_cap = 98.0
-    if trend_regime == "破位急跌飞刀":
-        score_cap = min(score_cap, 62.0)
-        risk_notes.append("🛑 破位急跌熔断：周线重挫且未收复下轨，总分封顶62分，暂缓接刀")
-    elif trend_regime == "空头阴跌通道":
-        score_cap = min(score_cap, 73.5)
-        risk_notes.append("⚠️ 空头通道限分：现价<MA20<MA60且月线阴跌，总分封顶73.5分，右侧企稳前仅限极深虚值")
-    if pct_5y >= 92.0 and rsi >= 68.0:
-        score_cap = min(score_cap, 68.0)
-        risk_notes.append("⚠️ 历史极高分位过热熔断：5年分位>92%且RSI超买，总分封顶68分，防高位闪崩")
-
-    total_score = round(max(18.0, min(score_cap, raw_total)), 1)
 
     # Choose optimal recommended tier for current market state
     if (
@@ -928,6 +949,14 @@ def analyze_single_instrument(
         rec_tier_key = "balanced"
 
     rec_tier = tiers[rec_tier_key]
+    for _tk, _tr in tiers.items():
+        if not isinstance(_tr, dict):
+            continue
+        _tr["premiumIsEstimated"] = premium_is_estimated
+        _tr["premiumIsLiveQuote"] = False
+        _tr["annReturnIsModel"] = True
+        _tr["ivKind"] = iv_kind
+
 
     # Compute Spot-Futures Basis (期现差价 / 升贴水率 / 真实相对现货安全垫)
     basis_info = compute_instrument_basis(
@@ -944,9 +973,9 @@ def analyze_single_instrument(
                     tr["realSpotOtmPct"] = round((s_ref - float(tr["strike"])) / s_ref * 100.0, 2)
         put_basis_adj = float(basis_info.get("putScoreAdj") or 0.0)
         if trend_regime not in ("破位急跌飞刀", "空头阴跌通道"):
-            total_score = round(max(22.0, min(98.0, total_score + put_basis_adj)), 1)
+            raw_total += put_basis_adj
 
-    # Compute 5 Core Institutional Indicators (OI/Vol Flow, ADX14, Cross-Market Parity, Put OI Wall, Downside Tail Risk)
+    # Compute 5 Core Institutional Indicators (OI/Vol Flow, ADX14, Cross-Market Parity, model support zone, Downside Tail Risk)
     pro_metrics = compute_pro_indicators(
         inst=inst,
         bars=bars,
@@ -964,7 +993,21 @@ def analyze_single_instrument(
     )
     pro_put_adj = float((pro_metrics.get("scoreAdjustments") or {}).get("putAdj") or 0.0)
     if trend_regime not in ("破位急跌飞刀", "空头阴跌通道"):
-        total_score = round(max(22.0, min(98.5, total_score + pro_put_adj * 0.65)), 1)
+        raw_total += pro_put_adj * 0.65
+
+    # Hard Circuit Breakers applied AFTER basis/pro additives so caps cannot be bypassed.
+    score_cap = 98.0
+    if trend_regime == "破位急跌飞刀":
+        score_cap = min(score_cap, 62.0)
+        risk_notes.append("🛑 破位急跌熔断：周线重挫且未收复下轨，总分封顶62分，暂缓接刀")
+    elif trend_regime == "空头阴跌通道":
+        score_cap = min(score_cap, 73.5)
+        risk_notes.append("⚠️ 空头通道限分：现价<MA20<MA60且月线阴跌，总分封顶73.5分，右侧企稳前仅限极深虚值")
+    if pct_5y >= 92.0 and rsi >= 68.0:
+        score_cap = min(score_cap, 68.0)
+        risk_notes.append("⚠️ 历史极高分位过热熔断：5年分位>92%且RSI超买，总分封顶68分，防高位闪崩")
+
+    total_score = round(max(18.0, min(score_cap, raw_total)), 1)
 
     # Classify Strategy Archetype & Verdict Badge
     archetype, badge_tone, thesis_tags = _classify_archetype(
@@ -1089,13 +1132,21 @@ def analyze_single_instrument(
         "atmIvPct": round(atm_iv * 100.0, 1),
         "ivSource": iv_source,
         "isRealIv": is_real_iv,
+        "ivKind": iv_kind,
+        "staleQuote": stale_quote,
+        "premiumIsEstimated": premium_is_estimated,
+        "premiumIsLiveQuote": False,
         "ivRank": iv_rank,
+        "ivRankLabel": "HV/IV合成分位(非交易所IV Rank)",
+        "hvIvComposite": iv_rank,
+        "isOfficialIvRank": False,
         "vrpPts": vrp_pts,
         "volSurface": vol_surface,
         "rollGapCount": roll_gap_count,
         "lastRollDate": last_roll_date,
         "trendRegime": trend_regime,
-        "liquidityLabel": liq_label,
+        "liquidityLabel": liq_label + " · 静态启发式(非实时买卖价差)",
+        "liquidityIsStaticHeuristic": True,
         "earningsInfo": earnings_info,
         "riskNotes": risk_notes,
         "highCorrPeers": [],
@@ -1123,6 +1174,12 @@ def analyze_single_instrument(
         "tiers": tiers,
         "playbook": playbook,
         "asof": bars[-1]["t"],
+        "backtestMode": backtest_mode,
+        "macroCalibration": macro_regime.get("macroCalibration") or ("live" if not backtest_mode else "limited"),
+        "ngTerminalNote": (
+            "天然气终端(ng_terminal)的曲面/展期分析与本页卖Put评分相互独立，请勿混用。"
+            if inst.get("id") == "US_FUT:NG" else ""
+        ),
     }
 
 
@@ -1202,10 +1259,11 @@ def _classify_archetype(
         return "贴近产业成本+筑底 · 底部企稳卖Put", "bull", tags[:4]
     if cost_info and not anchor_ok:
         return "成本锚失效 · 仅按技术面保守档参考", "neutral", tags[:4]
+    # 波动率回归优先于「龙头回调」，避免高IV候选被其他标签吃掉
+    if iv_rank >= 58.0 and vrp_pts >= 2.0 and rsi <= 58.0:
+        return "高VRP恐慌溢价 · 波动率均值回归收租", "gold", tags[:4]
     if mkt == "us_stk" and dd_52w <= -7.0 and rsi <= 48.0:
         return "核心龙头回调企稳 · 以接货之心卖Put", "bull", tags[:4]
-    if iv_rank >= 62.0 and vrp_pts >= 3.0 and rsi <= 55.0:
-        return "高VRP恐慌溢价 · 波动率均值回归收租", "gold", tags[:4]
     if mkt == "us_stk":
         return "慢牛均线支撑 · 现金担保收租(CSP)", "gold", tags[:4]
     return "多周期支撑保护 · 顺势虚值收租", "gold", tags[:4]
@@ -1714,14 +1772,33 @@ def get_instrument_detail(
     chosen_tier_key = tier_key if tier_key in ("conservative", "balanced", "aggressive") else analysis["recommendedTierKey"]
     chosen_tier = analysis["tiers"][chosen_tier_key]
 
-    strike_for_payoff = float(custom_strike) if (custom_strike and custom_strike > 0) else chosen_tier["strike"]
+    spot_px = float(analysis["price"])
+    if custom_strike and custom_strike > 0:
+        strike_for_payoff = float(custom_strike)
+        atm_iv = float(analysis.get("atmIvPct") or chosen_tier.get("ivPct") or 20.0) / 100.0
+        strike_iv = skew_adjusted_iv(atm_iv, spot_px, strike_for_payoff, float(inst.get("iv_skew", 0.12)))
+        is_fut = inst["market"] in ("us_fut", "cn_fut")
+        priced = price_put_and_greeks(
+            spot_px,
+            strike_for_payoff,
+            actual_dte,
+            strike_iv,
+            r=risk_free_rate(inst["market"]),
+            is_futures=is_fut,
+        )
+        payoff_premium = float(priced["premium"])
+        payoff_iv = strike_iv
+    else:
+        strike_for_payoff = chosen_tier["strike"]
+        payoff_iv = chosen_tier["ivPct"] / 100.0
+        payoff_premium = chosen_tier["premium"]
     payoff = build_payoff_curve(
         inst=inst,
-        spot=analysis["price"],
+        spot=spot_px,
         strike=strike_for_payoff,
         dte=actual_dte,
-        iv=chosen_tier["ivPct"] / 100.0,
-        premium=chosen_tier["premium"],
+        iv=payoff_iv,
+        premium=payoff_premium,
     )
 
     return {

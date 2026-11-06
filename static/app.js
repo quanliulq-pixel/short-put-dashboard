@@ -55,6 +55,15 @@
     return "";
   }
 
+  function esc(s) {
+    return String(s ?? "")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#39;");
+  }
+
   function getActiveTier(row) {
     if (!row || !row.tiers) return row?.recommendedTier || {};
     if (state.tierPref !== "auto" && row.tiers[state.tierPref]) {
@@ -440,7 +449,7 @@
             </div>
             <div class="pcm-item">
               <span class="pcm-lbl">平值隐波 (${r.ivSource || "实盘IV"})</span>
-              <span class="pcm-val cyan-txt">${fmtNum(r.atmIvPct, 1)}% (分位 ${fmtNum(r.ivRank, 0)}%)</span>
+              <span class="pcm-val cyan-txt">${fmtNum(r.atmIvPct, 1)}% (${esc(r.ivRankLabel || "HV/IV合成分位")} ${fmtNum(r.ivRank, 0)}%)</span>
             </div>
             <div class="pcm-item">
               <span class="pcm-lbl">RSI(14) / 5年价格分位</span>
@@ -534,7 +543,7 @@
 
     el("ws-price").textContent = `${cur}${fmtSmart(a.price)} ${a.unit === "USD" ? "" : a.unit}`;
     el("ws-chg").innerHTML = `<span class="${colorCls(a.change1dPct)}">${fmtSignPct(a.change1dPct)}</span> / <span class="${colorCls(a.ret1wPct)}">${fmtSignPct(a.ret1wPct)}</span>`;
-    el("ws-iv").textContent = `${fmtNum(a.atmIvPct, 1)}% (${a.ivSource || "估算IV"} · IVR ${fmtNum(a.ivRank, 0)}%)`;
+    el("ws-iv").textContent = `${fmtNum(a.atmIvPct, 1)}% (${a.ivSource || "估算IV"} · ${a.ivRankLabel || "HV/IV合成分位"} ${fmtNum(a.ivRank, 0)}%)`;
     el("ws-rsi-pct").textContent = `RSI ${fmtNum(a.rsi14, 1)} · 5Y分位 ${fmtNum(a.pct5y, 0)}%`;
     el("ws-score").textContent = `${fmtNum(a.putScore, 1)} / ${fmtNum(a.directTrade?.directScore, 1)}`;
   }
@@ -873,7 +882,7 @@
 
     if (pm.optStructure && pm.optStructure.putOiWallStrike) {
       ladderItems.push({
-        label: "🧱 期权最大Put持仓墙 (OI Wall)",
+        label: "📍 模型支撑带(非实盘OI墙)",
         price: pm.optStructure.putOiWallStrike,
         cls: "is-strike",
       });
@@ -895,7 +904,7 @@
     if (a.cost) {
       ladderItems.push(
         { label: `● 产业完全成本中枢 (${a.cost.label.slice(0, 10)})`, price: a.cost.primaryCost, cls: "is-cost" },
-        { label: "● 产业现金成本铁底 (Cash Cost)", price: a.cost.cashCost, cls: "is-cost" }
+        { label: (a.cost.anchorValid === false ? "● 表内现金成本(锚已失效，非铁底)" : "● 产业现金成本(表内参考)"), price: a.cost.cashCost, cls: "is-cost" }
       );
     } else {
       ladderItems.push({ label: "52周最低价", price: sup.low52w, cls: "" });
@@ -921,12 +930,12 @@
   function renderPlaybook(detail) {
     const pb = detail.analysis?.playbook || {};
     el("ws-playbook").innerHTML = `
-      <div class="pb-item pb-bull"><strong>【本周执行结论】</strong>${pb.headline || "--"}</div>
-      <div class="pb-item pb-cyan"><strong>【基本面与成本/估值定位】</strong>${pb.whyNow || "--"}</div>
-      <div class="pb-item"><strong>【行权价安全垫与收益测算】</strong>${pb.strikeLogic || "--"}</div>
-      ${pb.directTradeLogic ? `<div class="pb-item" style="border-left:3px solid #3b82f6;"><strong>【📈 直接买卖股票/期货 vs 卖Put期权对比】</strong>${pb.directTradeLogic}</div>` : ""}
-      ${pb.spreadLogic ? `<div class="pb-item" style="border-left:3px solid #a855f7;"><strong>【🛡️ 牛市看跌价差 (Bull Put Spread) 对冲方案】</strong>${pb.spreadLogic}</div>` : ""}
-      ${pb.wheelLogic ? `<div class="pb-item" style="border-left:3px solid #38bdf8;"><strong>【🔄 车轮策略 (The Wheel) 接货后备兑闭环】</strong>${pb.wheelLogic}</div>` : ""}
+      <div class="pb-item pb-bull"><strong>【本周执行结论】</strong>${esc(pb.headline || "--")}</div>
+      <div class="pb-item pb-cyan"><strong>【基本面与成本/估值定位】</strong>${esc(pb.whyNow || "--")}</div>
+      <div class="pb-item"><strong>【行权价安全垫与收益测算】</strong>${esc(pb.strikeLogic || "--")}</div>
+      ${pb.directTradeLogic ? `<div class="pb-item" style="border-left:3px solid #3b82f6;"><strong>【📈 直接买卖股票/期货 vs 卖Put期权对比】</strong>${esc(pb.directTradeLogic)}</div>` : ""}
+      ${pb.spreadLogic ? `<div class="pb-item" style="border-left:3px solid #a855f7;"><strong>【🛡️ 牛市看跌价差 (Bull Put Spread) 对冲方案】</strong>${esc(pb.spreadLogic)}</div>` : ""}
+      ${pb.wheelLogic ? `<div class="pb-item" style="border-left:3px solid #38bdf8;"><strong>【🔄 车轮策略 (The Wheel) 接货后备兑闭环】</strong>${esc(pb.wheelLogic)}</div>` : ""}
       <div class="pb-item pb-risk"><strong>【止盈纪律与防穿仓展期(Roll)风控】</strong>${pb.riskControl || "--"}</div>
     `;
   }
@@ -1338,7 +1347,7 @@
       const ch = await resp.json();
       if (!ch.available || !ch.puts || !ch.puts.length) {
         sub.textContent = ch.note || "该品种使用场内Black-76期货期权理论定价";
-        wrap.innerHTML = `<div class="empty-note">${ch.note || "国内/场内期货期权已直接集成至上方三档行权价矩阵中"}</div>`;
+        wrap.innerHTML = `<div class="empty-note">${esc(ch.note || "国内/场内期货期权已直接集成至上方三档行权价矩阵中")}</div>`;
         return;
       }
 
@@ -1408,8 +1417,19 @@
           } else if (curVeh !== targetVeh) {
             return false;
           }
-        } else if (!r.archetype.includes(state.archetypeFilter)) {
-          return false;
+        } else {
+          const needle = state.archetypeFilter;
+          const aliases = {
+            "高VRP恐慌溢价": ["高VRP恐慌溢价", "高IV恐慌溢价", "波动率均值回归", "恐慌溢价"],
+            "高IV恐慌溢价": ["高VRP恐慌溢价", "高IV恐慌溢价", "波动率均值回归", "恐慌溢价"],
+            "破现金成本": ["破现金成本"],
+            "贴近产业成本": ["贴近产业成本"],
+            "核心龙头回调": ["核心龙头回调"],
+            "慢牛均线支撑": ["慢牛均线支撑", "多周期支撑保护"],
+          };
+          const keys = aliases[needle] || [needle];
+          const blob = `${r.archetype || ""} ${(r.thesisTags || []).join(" ")}`;
+          if (!keys.some((k) => blob.includes(k))) return false;
         }
       }
       if (q) {
